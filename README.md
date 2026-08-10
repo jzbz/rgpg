@@ -388,7 +388,6 @@ Reading `~/.gnupg` in place is possible but not built:
 Roughly in the order Kleopatra users would notice them missing:
 
 - **Reading GnuPG's store directly** — see [Coming from GnuPG](#coming-from-gnupg).
-- **Revoking a single subkey.** User IDs can be revoked; subkeys cannot.
 - **Smartcard / YubiKey** (`sequoia-keystore-openpgp-card`).
 - **Deleting certificates.** Unlinking the cert-d file is not enough: sequoia-cert-store keeps an authoritative SQLite index beside it, so a removed certificate is still listed by a freshly reopened store. Needs removal support in cert-d, or a different backing store.
 - **Column sorting.** `StandardTableView` emits `sort-ascending`/`sort-descending`;

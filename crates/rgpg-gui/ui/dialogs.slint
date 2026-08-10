@@ -1020,6 +1020,7 @@ export component DetailsDialog inherits DialogShell {
     callback change-expiry();
     callback add-user-id();
     callback revoke-user-id(string);
+    callback revoke-subkey(string);
 
     title: root.cert.primary-user-id;
     subtitle: "Everything the side panel has no room for.";
@@ -1122,6 +1123,11 @@ export component DetailsDialog inherits DialogShell {
                 }
                 if key.has-secret: Pill { text: "secret"; tone: Tone.accent; }
                 if key.revoked: Pill { text: "revoked"; tone: Tone.danger; }
+                if root.owned && !key.revoked: Btn {
+                    glyph: Icons.revoke;
+                    variant: Variant.ghost;
+                    clicked => { root.revoke-subkey(key.fingerprint); }
+                }
             }
         }
 
@@ -1191,7 +1197,8 @@ export component LifecycleDialog inherits DialogShell {
 
     title: root.mode == 0 ? "Change expiry"
         : root.mode == 1 ? "Add a user ID"
-        : root.mode == 2 ? "Revoke a user ID" : "Publish to a keyserver";
+        : root.mode == 2 ? "Revoke a user ID"
+        : root.mode == 4 ? "Revoke a subkey" : "Publish to a keyserver";
     subtitle: root.mode == 0
         ? "Extend, shorten, or remove the expiry date. An expiring key can be "
           + "brought back after it has lapsed."
@@ -1202,10 +1209,14 @@ export component LifecycleDialog inherits DialogShell {
                 ? "Withdraw " + root.target + ". It stays on the key so anyone "
                   + "with an older copy can see it was retracted, rather than "
                   + "simply not knowing about it."
-                : "Upload this certificate to keys.openpgp.org. This cannot be "
-                  + "undone: a keyserver has no delete, so the key and every "
-                  + "user ID on it become public permanently. Only the public "
-                  + "half is sent.";
+                : root.mode == 4
+                    ? "Retract subkey " + root.target + ". The rest of the key "
+                      + "keeps working — use this when one subkey's secret is "
+                      + "exposed but the primary is not."
+                    : "Upload this certificate to keys.openpgp.org. This cannot "
+                      + "be undone: a keyserver has no delete, so the key and "
+                      + "every user ID on it become public permanently. Only "
+                      + "the public half is sent.";
     card-width: 480px;
 
     VerticalLayout {
@@ -1260,7 +1271,8 @@ export component LifecycleDialog inherits DialogShell {
                 text: root.busy ? "Working…"
                     : root.mode == 0 ? "Set expiry"
                     : root.mode == 1 ? "Add user ID"
-                    : root.mode == 2 ? "Revoke user ID" : "Publish permanently";
+                    : root.mode == 2 ? "Revoke user ID"
+                    : root.mode == 4 ? "Revoke subkey" : "Publish permanently";
                 variant: root.mode >= 2 ? Variant.danger : Variant.primary;
                 enabled: !root.busy && (root.mode != 1 || root.value != "");
                 clicked => {

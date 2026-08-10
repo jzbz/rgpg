@@ -275,6 +275,7 @@ export component AppWindow inherits Window {
     callback open-publish();
     callback open-add-user-id();
     callback open-revoke-user-id(string);
+    callback open-revoke-subkey(string);
     callback lifecycle-run(int, string, string, string);
 
     callback open-notepad();
@@ -896,6 +897,7 @@ export component AppWindow inherits Window {
         change-expiry => { root.details-open = false; root.open-expiry(); }
         add-user-id => { root.details-open = false; root.open-add-user-id(); }
         revoke-user-id(uid) => { root.details-open = false; root.open-revoke-user-id(uid); }
+        revoke-subkey(fpr) => { root.details-open = false; root.open-revoke-subkey(fpr); }
     }
 
     if root.lookup-open: LookupDialog {

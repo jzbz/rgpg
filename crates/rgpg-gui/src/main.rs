@@ -1394,6 +1394,13 @@ fn wire_lifecycle(ui: &AppWindow, state: &Shared) {
             open(&ui, 0, SharedString::new());
         }
     });
+    ui.on_open_revoke_subkey({
+        let ui_weak = ui.as_weak();
+        move |subkey| {
+            let ui = ui_weak.unwrap();
+            open(&ui, 4, subkey);
+        }
+    });
     ui.on_open_publish({
         let ui_weak = ui.as_weak();
         move || {
@@ -1495,6 +1502,14 @@ fn run_lifecycle(
                 .map_err(|e| format!("Could not revoke the user ID: {e}"))?;
             Ok((
                 "User ID revoked. Publish the key so others stop using it.".to_string(),
+                fingerprint.to_string(),
+            ))
+        }
+        4 => {
+            lifecycle::revoke_subkey(&guard.store, fingerprint, target, value, password)
+                .map_err(|e| format!("Could not revoke the subkey: {e}"))?;
+            Ok((
+                "Subkey revoked. Publish the key so others stop using it.".to_string(),
                 fingerprint.to_string(),
             ))
         }
