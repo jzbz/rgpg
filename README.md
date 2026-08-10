@@ -15,7 +15,7 @@ encrypting, decrypting and verifying all work from the window. Everything under
 
 | Crate | Contents |
 | --- | --- |
-| `crates/rgpg-core` | Certificate store, key generation, encrypt/decrypt/sign/verify, certification and web-of-trust. No GUI types. |
+| `crates/rgpg-core` | Certificate store, key generation, encrypt/decrypt/sign/verify, certification, web-of-trust, revocation and key lifecycle. No GUI types. |
 | `crates/rgpg-gui` | Slint front end. Binary is `rgpg`. |
 
 The GUI depends only on `rgpg-core`'s own types — no `sequoia_openpgp` type
@@ -363,8 +363,9 @@ Reading `~/.gnupg` in place is possible but not built:
 Roughly in the order Kleopatra users would notice them missing:
 
 - **Reading GnuPG's store directly** — see [Coming from GnuPG](#coming-from-gnupg).
-- **Revoking a single user ID or subkey.** Revocation today is all-or-nothing
-  on the certificate, plus withdrawing certifications.
+- **The key lifecycle UI.** `rgpg_core::lifecycle` changes expiry, adds a user
+  ID and revokes one, all covered by tests, but no dialog calls it yet.
+- **Revoking a single subkey.** User IDs can be revoked; subkeys cannot.
 - **Column sorting.** The list sorts own-keys-first then by name, and the rail
   filters by scope, but there is no sort control.
 - **Keyserver and WKD lookup** — re-enable `sequoia-cert-store`'s `keyserver`
