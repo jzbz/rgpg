@@ -146,6 +146,12 @@ struct State {
 
 type Shared = Arc<Mutex<State>>;
 
+// Callbacks and worker completions reach the window through a weak handle and
+// bail out if it has gone. Unwrapping instead would panic when the user closes
+// the window mid-operation: a worker's completion runs through
+// invoke_from_event_loop after the fact, by which point the window may be
+// gone. There is nothing useful to do at that point except stop.
+
 // ------------------------------------------------------------------ renderer
 
 /// Set on the restarted process so the software fallback can only happen once.
@@ -327,7 +333,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_about_open_link({
         let ui_weak = ui.as_weak();
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             if let Err(e) = open::that_detached("https://rgpg.app/") {
                 ui.set_status(format!("Could not open the browser: {e}").into());
             }
@@ -355,7 +363,9 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
     ui.on_refresh({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             reload(&ui, &state);
         }
     });
@@ -363,7 +373,9 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
     ui.on_filter_changed({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |text| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             // A worker holds the state lock for the whole of its operation,
             // and that can be a card PIN prompt lasting a minute. Locking here
             // would block the UI thread and freeze the window, so these
@@ -379,7 +391,9 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
     ui.on_sort_changed({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |index| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             // A worker holds the state lock for the whole of its operation,
             // and that can be a card PIN prompt lasting a minute. Locking here
             // would block the UI thread and freeze the window, so these
@@ -395,7 +409,9 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
     ui.on_scope_changed({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |index| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             // A worker holds the state lock for the whole of its operation,
             // and that can be a card PIN prompt lasting a minute. Locking here
             // would block the UI thread and freeze the window, so these
@@ -411,7 +427,9 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
     ui.on_row_selected({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |row| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             // A worker holds the state lock for the whole of its operation,
             // and that can be a card PIN prompt lasting a minute. Locking here
             // would block the UI thread and freeze the window, so these
@@ -453,7 +471,9 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
                 else {
                     return;
                 };
-                let ui = ui_weak.unwrap();
+                let Some(ui) = ui_weak.upgrade() else {
+                    return;
+                };
                 // A revocation certificate is a bare signature, not a
                 // certificate, so CertParser rejects it. Same button, because a
                 // user handed a .rev file expects Import to take it.
@@ -489,7 +509,9 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
             let _ = slint::spawn_local(async move {
                 let (fingerprint, suggested) = {
-                    let ui = ui_weak.unwrap();
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
                     let row = ui.get_current_row();
                     let state = state.lock().unwrap();
                     match usize::try_from(row).ok().and_then(|r| state.shown.get(r)) {
@@ -507,7 +529,9 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
                     return;
                 };
 
-                let ui = ui_weak.unwrap();
+                let Some(ui) = ui_weak.upgrade() else {
+                    return;
+                };
                 let outcome = state
                     .lock()
                     .unwrap()
@@ -528,7 +552,9 @@ fn wire_keygen(ui: &AppWindow, state: &Shared) {
     ui.on_generate_key({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |name, email, password, key_type, expiry, standard| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
 
             let request = KeyGenRequest {
                 user_ids: vec![format!("{} <{}>", name.trim(), email.trim())],
@@ -550,7 +576,9 @@ fn wire_keygen(ui: &AppWindow, state: &Shared) {
             std::thread::spawn(move || {
                 let generated = keygen::generate(&request);
                 let _ = slint::invoke_from_event_loop(move || {
-                    let ui = ui_weak.unwrap();
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
                     ui.set_busy(false);
                     match generated.and_then(|key| {
                         let guard = state.lock().unwrap();
@@ -593,7 +621,9 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
     ui.on_open_sign_encrypt({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             let mut guard = state.lock().unwrap();
 
             // Anyone who can receive encrypted mail is a candidate recipient;
@@ -664,7 +694,9 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
                 else {
                     return;
                 };
-                let ui = ui_weak.unwrap();
+                let Some(ui) = ui_weak.upgrade() else {
+                    return;
+                };
                 let mut guard = state.lock().unwrap();
                 guard.se_input = Some(file.path().to_path_buf());
                 push_sign_encrypt(&ui, &guard);
@@ -675,7 +707,9 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
     ui.on_se_toggle_recipient({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |index| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             let mut guard = state.lock().unwrap();
             if let Some(entry) = usize::try_from(index)
                 .ok()
@@ -690,7 +724,9 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
     ui.on_se_run({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |encrypt, sign, signer_index, password, secret| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             ui.set_busy(true);
             ui.set_status(if encrypt { "Encrypting…" } else { "Signing…" }.into());
 
@@ -700,7 +736,9 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
                 let outcome =
                     run_sign_encrypt(&state, encrypt, sign, signer_index, &password, &secret);
                 let _ = slint::invoke_from_event_loop(move || {
-                    let ui = ui_weak.unwrap();
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
                     ui.set_busy(false);
                     match outcome {
                         Ok(output) => {
@@ -834,7 +872,9 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
     ui.on_open_decrypt_verify({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             let mut guard = state.lock().unwrap();
             guard.dv_input = None;
             guard.dv_data = None;
@@ -869,7 +909,9 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
                     .map(|bytes| ops::classify(&bytes))
                     .unwrap_or(InputKind::NotOpenPgp);
 
-                let ui = ui_weak.unwrap();
+                let Some(ui) = ui_weak.upgrade() else {
+                    return;
+                };
                 let mut guard = state.lock().unwrap();
                 guard.dv_input = Some(path);
                 guard.dv_kind = kind;
@@ -892,7 +934,9 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
                 else {
                     return;
                 };
-                let ui = ui_weak.unwrap();
+                let Some(ui) = ui_weak.upgrade() else {
+                    return;
+                };
                 let mut guard = state.lock().unwrap();
                 guard.dv_data = Some(file.path().to_path_buf());
                 push_decrypt_verify(&ui, &guard);
@@ -903,7 +947,9 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
     ui.on_dv_run({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |password| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             ui.set_busy(true);
             ui.set_status("Working…".into());
 
@@ -912,7 +958,9 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
             std::thread::spawn(move || {
                 let outcome = run_decrypt_verify(&state, &password);
                 let _ = slint::invoke_from_event_loop(move || {
-                    let ui = ui_weak.unwrap();
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
                     ui.set_busy(false);
                     match outcome {
                         Ok((summary, tone, result)) => {
@@ -1017,7 +1065,9 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
     ui.on_open_certify({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             let mut guard = state.lock().unwrap();
 
             let Some(target) = usize::try_from(ui.get_current_row())
@@ -1064,7 +1114,9 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
     ui.on_certify_toggle_user_id({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |index| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             let mut guard = state.lock().unwrap();
             if let Some(entry) = usize::try_from(index)
                 .ok()
@@ -1079,7 +1131,9 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
     ui.on_certify_run({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |certifier_index, publishable, introducer, confidence, password| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             ui.set_busy(true);
             ui.set_status("Certifying…".into());
 
@@ -1095,7 +1149,9 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
                     &password,
                 );
                 let _ = slint::invoke_from_event_loop(move || {
-                    let ui = ui_weak.unwrap();
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
                     ui.set_busy(false);
                     match outcome {
                         Ok(count) => {
@@ -1115,7 +1171,9 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
     ui.on_toggle_trust_root({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             let fingerprint = ui.get_detail().fingerprint.to_string();
             if fingerprint.is_empty() {
                 return;
@@ -1310,7 +1368,9 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
     ui.on_open_lookup({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             state.lock().unwrap().lookup_results.clear();
             ui.set_lookup_results(ModelRc::new(VecModel::from(Vec::<LookupRow>::new())));
             ui.set_lookup_status(SharedString::new());
@@ -1322,7 +1382,9 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
     ui.on_lookup_run({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |query| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             ui.set_busy(true);
             ui.set_lookup_status("Searching…".into());
 
@@ -1333,7 +1395,9 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
                 // on a DNS timeout for seconds.
                 let outcome = rgpg_core::keyserver::lookup(&query);
                 let _ = slint::invoke_from_event_loop(move || {
-                    let ui = ui_weak.unwrap();
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
                     ui.set_busy(false);
                     ui.set_lookup_searched(true);
 
@@ -1387,7 +1451,9 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
     ui.on_lookup_import({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |index| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             let outcome = {
                 let guard = state.lock().unwrap();
                 match usize::try_from(index)
@@ -1429,35 +1495,45 @@ fn wire_lifecycle(ui: &AppWindow, state: &Shared) {
     ui.on_open_expiry({
         let ui_weak = ui.as_weak();
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             open(&ui, 0, SharedString::new());
         }
     });
     ui.on_open_revoke_subkey({
         let ui_weak = ui.as_weak();
         move |subkey| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             open(&ui, 4, subkey);
         }
     });
     ui.on_open_publish({
         let ui_weak = ui.as_weak();
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             open(&ui, 3, SharedString::new());
         }
     });
     ui.on_open_add_user_id({
         let ui_weak = ui.as_weak();
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             open(&ui, 1, SharedString::new());
         }
     });
     ui.on_open_revoke_user_id({
         let ui_weak = ui.as_weak();
         move |user_id| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             open(&ui, 2, user_id);
         }
     });
@@ -1465,7 +1541,9 @@ fn wire_lifecycle(ui: &AppWindow, state: &Shared) {
     ui.on_lifecycle_run({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |mode, expiry, value, password| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             let fingerprint = ui.get_detail().fingerprint.to_string();
             let target = ui.get_lifecycle_target().to_string();
             ui.set_busy(true);
@@ -1485,7 +1563,9 @@ fn wire_lifecycle(ui: &AppWindow, state: &Shared) {
                     &password,
                 );
                 let _ = slint::invoke_from_event_loop(move || {
-                    let ui = ui_weak.unwrap();
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
                     ui.set_busy(false);
                     match outcome {
                         Ok((message, fingerprint)) => {
@@ -1592,7 +1672,9 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
     ui.on_open_details({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             let guard = state.lock().unwrap();
             let fingerprint = ui.get_detail().fingerprint.to_string();
             let Ok(cert) = guard.store.lookup(&fingerprint) else {
@@ -1631,7 +1713,9 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
     ui.on_open_notepad({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             // Shares the Sign / Encrypt models, so opening the notepad has to
             // fill them the same way.
             load_signing_targets(&ui, &state);
@@ -1646,7 +1730,9 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
     ui.on_np_copy({
         let ui_weak = ui.as_weak();
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             let text = ui.get_np_output().to_string();
             match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
                 Ok(()) => {
@@ -1671,7 +1757,9 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
     ui.on_np_run({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |action, text, signer_index, password, secret| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             ui.set_busy(true);
             ui.set_status("Working…".into());
 
@@ -1682,7 +1770,9 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
                 let outcome =
                     run_notepad(&state, action, &text, signer_index, &password, &secret);
                 let _ = slint::invoke_from_event_loop(move || {
-                    let ui = ui_weak.unwrap();
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
                     ui.set_busy(false);
                     match outcome {
                         Ok((output, summary, tone, signatures)) => {
@@ -1877,7 +1967,9 @@ fn wire_revoke(ui: &AppWindow, state: &Shared) {
     ui.on_open_revoke({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             open_revoke_dialog(&ui, &state, false);
         }
     });
@@ -1885,7 +1977,9 @@ fn wire_revoke(ui: &AppWindow, state: &Shared) {
     ui.on_open_withdraw({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             open_revoke_dialog(&ui, &state, true);
         }
     });
@@ -1893,7 +1987,9 @@ fn wire_revoke(ui: &AppWindow, state: &Shared) {
     ui.on_revoke_run({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |reason, message, password| {
-            let ui = ui_weak.unwrap();
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
             ui.set_busy(true);
             ui.set_status("Revoking…".into());
 
@@ -1902,7 +1998,9 @@ fn wire_revoke(ui: &AppWindow, state: &Shared) {
             std::thread::spawn(move || {
                 let outcome = run_revoke(&state, reason, &message, &password);
                 let _ = slint::invoke_from_event_loop(move || {
-                    let ui = ui_weak.unwrap();
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
                     ui.set_busy(false);
                     match outcome {
                         Ok((fingerprint, message)) => {
@@ -1924,7 +2022,9 @@ fn wire_revoke(ui: &AppWindow, state: &Shared) {
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
             let _ = slint::spawn_local(async move {
                 let (source, suggested) = {
-                    let ui = ui_weak.unwrap();
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
                     let fingerprint = ui.get_detail().fingerprint.to_string();
                     let guard = state.lock().unwrap();
                     (
@@ -1942,7 +2042,9 @@ fn wire_revoke(ui: &AppWindow, state: &Shared) {
                     return;
                 };
 
-                let ui = ui_weak.unwrap();
+                let Some(ui) = ui_weak.upgrade() else {
+                    return;
+                };
                 ui.set_status(
                     match std::fs::copy(&source, file.path()) {
                         Ok(_) => format!(
