@@ -20,6 +20,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -63,6 +64,14 @@ impl Store {
             .map_err(|e| Error::io(format!("creating {}", cert_dir.display()), e))?;
         fs::create_dir_all(secrets_dir)
             .map_err(|e| Error::io(format!("creating {}", secrets_dir.display()), e))?;
+        // Secret key material, and the revocation certificates that could
+        // retire a key, must not be world-readable. Tighten on every open, not
+        // only on create: a store made by an earlier version is already
+        // exposed, and the user has no way to know it.
+        restrict(secrets_dir, 0o700)?;
+        for path in existing_files(secrets_dir) {
+            restrict(&path, 0o600)?;
+        }
 
         Ok(Store {
             certs: CertStore::open(cert_dir)?,
@@ -92,8 +101,12 @@ impl Store {
         fs::create_dir_all(&self.revocations_dir).map_err(|e| {
             Error::io(format!("creating {}", self.revocations_dir.display()), e)
         })?;
+        restrict(&self.revocations_dir, 0o700)?;
+
+        // Anyone holding this file can retire the key it belongs to.
         let path = self.revocation_path(fingerprint);
-        fs::write(&path, armored)
+        let mut file = create_private(&path)?;
+        file.write_all(armored)
             .map_err(|e| Error::io(format!("writing {}", path.display()), e))
     }
 
@@ -184,8 +197,7 @@ impl Store {
             return Err(Error::invalid("certificate carries no secret key material"));
         }
         let path = self.secret_path(&cert.fingerprint().to_hex());
-        let mut file = fs::File::create(&path)
-            .map_err(|e| Error::io(format!("writing {}", path.display()), e))?;
+        let mut file = create_private(&path)?;
         cert.as_tsk().serialize(&mut file)?;
         self.insert(cert)
     }
@@ -337,6 +349,52 @@ impl Store {
     }
 }
 
+/// Files directly inside `dir`, ignoring anything unreadable.
+fn existing_files(dir: &Path) -> Vec<PathBuf> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .collect()
+}
+
+/// Create a file only the current user can read, with the mode set at the
+/// moment of creation.
+///
+/// Creating it and then relaxing to `chmod` would leave a window in which
+/// another user could open the file and keep that descriptor across every
+/// later write.
+fn create_private(path: &Path) -> Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .map_err(|e| Error::io(format!("writing {}", path.display()), e))
+}
+
+/// Restrict a path to the current user.
+///
+/// A no-op off Unix, where the permission model does not map: Windows would
+/// need an ACL, and pretending otherwise would be worse than being explicit.
+#[cfg(unix)]
+fn restrict(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|e| Error::io(format!("restricting {}", path.display()), e))
+}
+
+#[cfg(not(unix))]
+fn restrict(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,7 +418,11 @@ mod tests {
 
         // Through import_file, so the magic-byte sniffing is exercised too.
         let imported = store.import_file(&keybox).unwrap();
-        eprintln!("imported {} certificate(s) from {}", imported.len(), keybox.display());
+        eprintln!(
+            "imported {} certificate(s) from {}",
+            imported.len(),
+            keybox.display()
+        );
         for cert in imported.iter().take(3) {
             eprintln!("  {}", crate::CertSummary::from_cert(cert).primary_user_id);
         }
@@ -369,6 +431,59 @@ mod tests {
         assert_eq!(store.certs().unwrap().len(), imported.len());
         // A Keybox holds only public certificates.
         assert!(imported.iter().all(|c| !c.is_tsk()));
+    }
+
+    /// Secret key material and revocation certificates must not be readable
+    /// by other users on the machine. Asserted on the bytes on disk, because
+    /// the default umask makes 0644 the thing that happens by accident.
+    #[test]
+    #[cfg(unix)]
+    fn private_files_are_not_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        fn mode(path: &Path) -> u32 {
+            fs::metadata(path).unwrap().permissions().mode() & 0o777
+        }
+
+        let (dir, store) = scratch();
+        let secrets = dir.path().join("secrets");
+
+        let request = crate::keygen::KeyGenRequest::new("Alice <alice@example.org>");
+        let generated = crate::keygen::generate(&request).unwrap();
+        store.insert_secret(&generated.cert).unwrap();
+        let fingerprint = generated.cert.fingerprint().to_hex();
+        store
+            .save_revocation(
+                &fingerprint,
+                &crate::revoke::armor(&generated.revocation).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(mode(&secrets), 0o700, "secrets directory");
+        assert_eq!(mode(&store.secret_path(&fingerprint)), 0o600, "secret key");
+        assert_eq!(mode(&store.revocations_dir), 0o700, "revocations directory");
+        assert_eq!(
+            mode(&store.revocation_path(&fingerprint)),
+            0o600,
+            "revocation certificate",
+        );
+
+        // A store written by an earlier version is already exposed; reopening
+        // it has to repair that rather than leave it.
+        fs::set_permissions(&secrets, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(
+            store.secret_path(&fingerprint),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+
+        let reopened = Store::open(dir.path().join("certs.d"), &secrets).unwrap();
+        assert_eq!(mode(&secrets), 0o700, "secrets directory after reopen");
+        assert_eq!(
+            mode(&reopened.secret_path(&fingerprint)),
+            0o600,
+            "secret key after reopen",
+        );
     }
 
     #[test]
