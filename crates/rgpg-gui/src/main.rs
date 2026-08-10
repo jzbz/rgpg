@@ -3,6 +3,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -75,7 +77,152 @@ struct State {
 
 type Shared = Arc<Mutex<State>>;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+// ------------------------------------------------------------------ renderer
+
+/// Set on the restarted process so the software fallback can only happen once.
+const FALLBACK_GUARD: &str = "RGPG_SOFTWARE_FALLBACK";
+
+/// Raised by the panic hook when the panic was wgpu failing to find an adapter,
+/// so that an unrelated panic is not mistaken for a graphics problem.
+static NO_GPU_ADAPTER: AtomicBool = AtomicBool::new(false);
+
+fn main() -> ExitCode {
+    configure_renderer();
+    install_panic_hook();
+
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+        Ok(Ok(())) => ExitCode::SUCCESS,
+        Ok(Err(e)) => {
+            eprintln!("rgpg: {e}");
+            ExitCode::FAILURE
+        }
+        Err(payload) => {
+            if NO_GPU_ADAPTER.load(Ordering::Relaxed) {
+                restart_with_software_renderer()
+            } else {
+                // Not a graphics failure: let it look like an ordinary crash.
+                std::panic::resume_unwind(payload)
+            }
+        }
+    }
+}
+
+/// Choose the renderer up front, so a machine without a usable GPU gets a
+/// window instead of a crash.
+///
+/// Asking for wgpu explicitly is what makes this possible: `select()` probes
+/// for an adapter and reports failure as an error, where leaving Slint to pick
+/// the renderer on its own defers the same question to window-creation time,
+/// where it is an `expect` and takes the process with it.
+///
+/// The probe cannot see everything. It asks wgpu for an adapter without a
+/// surface, so a driver that exists but cannot present to a window — a plain X
+/// server with no DRI3, some VMs — still satisfies it and still fails later.
+/// [`restart_with_software_renderer`] is the net under that case.
+///
+/// The backend set is pinned to `PRIMARY` on purpose. `WGPUSettings::default()`
+/// asks for more than Slint does internally — the GL backend among them — and
+/// wgpu's GL backend *hangs indefinitely* on a display it cannot use rather
+/// than reporting failure. A machine that would only have managed GL now gets
+/// the software renderer, which is slower but appears.
+fn configure_renderer() {
+    // An explicit choice by the user wins.
+    if std::env::var_os("SLINT_BACKEND").is_some() {
+        return;
+    }
+
+    use slint::wgpu_29::{WGPUConfiguration, WGPUSettings, wgpu};
+
+    // WGPUSettings is #[non_exhaustive], so it has to be built by mutation.
+    let mut settings = WGPUSettings::default();
+    settings.backends = wgpu::Backends::PRIMARY;
+
+    let gpu = slint::BackendSelector::new()
+        .require_wgpu_29(WGPUConfiguration::Automatic(settings))
+        .select();
+
+    let Err(e) = gpu else {
+        return;
+    };
+
+    eprintln!("rgpg: no GPU renderer ({e}); using the software renderer.");
+    if let Err(e) = slint::BackendSelector::new()
+        .renderer_name("software".into())
+        .select()
+    {
+        eprintln!("rgpg: could not select the software renderer either: {e}");
+    }
+}
+
+fn install_panic_hook() {
+    let inner = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+
+        if message.contains("Failed to find an appropriate adapter") {
+            NO_GPU_ADAPTER.store(true, Ordering::Relaxed);
+            // Swallow the backtrace: main turns this into a restart, and the
+            // wall of wgpu diagnostics would only look like a crash.
+            return;
+        }
+        inner(info);
+    }));
+}
+
+/// Re-run this executable on the software renderer.
+///
+/// A fresh process rather than a retry in-place: Slint's platform can only be
+/// set once, and the failed attempt leaves the winit event loop half-built.
+fn restart_with_software_renderer() -> ExitCode {
+    if std::env::var_os(FALLBACK_GUARD).is_some() {
+        eprintln!("rgpg: the software renderer failed as well; giving up.");
+        return ExitCode::FAILURE;
+    }
+
+    eprintln!("rgpg: no usable GPU adapter, restarting with the software renderer.");
+
+    let executable = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("rgpg: cannot locate this executable to restart it: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut command = std::process::Command::new(executable);
+    command
+        .args(std::env::args_os().skip(1))
+        .env("SLINT_BACKEND", "winit-software")
+        .env(FALLBACK_GUARD, "1");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // exec replaces this process, so on success nothing below runs.
+        let e = command.exec();
+        eprintln!("rgpg: could not restart: {e}");
+        ExitCode::FAILURE
+    }
+
+    #[cfg(not(unix))]
+    match command.status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(_) => ExitCode::FAILURE,
+        Err(e) => {
+            eprintln!("rgpg: could not restart: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- app
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let ui = AppWindow::new()?;
 
     let store = match Store::open_default() {

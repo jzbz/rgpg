@@ -27,6 +27,10 @@ slint = { version = "1.17", default-features = false, features = [
     "backend-winit",
     "renderer-femtovg-wgpu",
     "renderer-software",
+    # Needed only to widen the backend set wgpu is allowed to pick from; see
+    # `configure_renderer` in main.rs. The API is unstable and tied to wgpu's
+    # major version, so it will need revisiting when Slint moves to wgpu 30.
+    "unstable-wgpu-29",
 ] }
 
 # Defaults are xdg-portal + wayland + pollster: no GTK, so no C dependency on

@@ -112,17 +112,39 @@ usable GPU:
 SLINT_BACKEND=winit-software cargo run -p rgpg-gui
 ```
 
-That escape hatch currently has to be used by hand. **When wgpu finds no
-compatible adapter the app panics rather than falling back**, inside
-`i-slint-core`'s `wgpu_29.rs` at adapter selection:
+Setting it by hand should not be necessary. Left to itself, Slint decides
+whether wgpu can work at window-creation time, and answers "no" with an
+`expect` — so a machine without a usable GPU gets
 
     Failed to find an appropriate adapter: NotFound { .. incompatible_surface_backends: Backends(VULKAN) }
 
-Slint's documented renderer order is skia → femtovg → software, but the wgpu
-path aborts instead of returning an error the selector could fall back from. It
-reproduces on any display without a presentable Vulkan surface — a plain Xvfb,
-some VMs, some remote sessions. Until it is handled, those users get a crash
-instead of a slower window.
+instead of a window. That is not a rare configuration: it is any display with
+no presentable Vulkan surface, which covers plain X servers, a good number of
+VMs, and remote sessions. `configure_renderer` and `restart_with_software_renderer`
+in `main.rs` handle it in two stages, because one is not enough:
+
+1. **Ask for wgpu explicitly, before any window exists.** `BackendSelector`'s
+   `select()` probes for an adapter and *returns* failure rather than panicking,
+   so the software renderer can be chosen cleanly. This catches every machine
+   with no GPU adapter at all.
+2. **Catch the panic and re-exec.** The probe asks for an adapter without a
+   surface, so a driver that exists but cannot present still passes it and still
+   fails later. A panic hook recognises that one message, and the process
+   restarts itself with `SLINT_BACKEND=winit-software`. A fresh process rather
+   than a retry in place: Slint's platform can only be set once. A guard
+   variable stops it looping, and any *other* panic is re-raised untouched
+   rather than being mistaken for a graphics fault.
+
+The backend set is pinned to wgpu's `PRIMARY`. `WGPUSettings::default()` is
+wider and includes the GL backend, which looks like a free extra fallback and
+is not: on a display it cannot use, wgpu's GL backend **hangs** instead of
+failing. A crash that restarts is recoverable; a window that never appears is
+not. A GL-only machine therefore gets the software renderer.
+
+Verified against five graphics configurations under Xvfb — working software
+Vulkan, no Vulkan with GL present, no graphics stack at all, a real GPU ICD
+that cannot present, and a mismatched ICD — plus a real Wayland desktop, which
+still maps `libvulkan_radeon.so` and prints nothing.
 
 `renderer-skia` is never enabled: it needs a C++ toolchain.
 
