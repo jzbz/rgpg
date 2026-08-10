@@ -363,8 +363,6 @@ Reading `~/.gnupg` in place is possible but not built:
 Roughly in the order Kleopatra users would notice them missing:
 
 - **Reading GnuPG's store directly** — see [Coming from GnuPG](#coming-from-gnupg).
-- **The key lifecycle UI.** `rgpg_core::lifecycle` changes expiry, adds a user
-  ID and revokes one, all covered by tests, but no dialog calls it yet.
 - **Revoking a single subkey.** User IDs can be revoked; subkeys cannot.
 - **Column sorting.** The list sorts own-keys-first then by name, and the rail
   filters by scope, but there is no sort control.

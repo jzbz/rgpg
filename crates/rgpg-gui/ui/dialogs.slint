@@ -970,6 +970,11 @@ export component DetailsDialog inherits DialogShell {
     in property <[UserIdDetailRow]> user-ids;
     in property <[SubkeyRow]> subkeys;
     in property <[CertificationRow]> certifications;
+    /// Our own key, so the lifecycle actions apply.
+    in property <bool> owned: false;
+    callback change-expiry();
+    callback add-user-id();
+    callback revoke-user-id(string);
 
     title: root.cert.primary-user-id;
     subtitle: "Everything the side panel has no room for.";
@@ -984,16 +989,31 @@ export component DetailsDialog inherits DialogShell {
             FieldRow { label: "Fingerprint"; value: root.cert.fingerprint-pretty; mono: true; }
             FieldRow { label: "Algorithm"; value: root.cert.algorithm; }
             FieldRow { label: "Created"; value: root.cert.created; }
-            FieldRow {
-                label: "Expires";
-                value: root.cert.expires == "" ? "never" : root.cert.expires;
+            HorizontalLayout {
+                FieldRow {
+                    label: "Expires";
+                    value: root.cert.expires == "" ? "never" : root.cert.expires;
+                    horizontal-stretch: 1;
+                }
+                if root.owned: Btn {
+                    text: "Change…";
+                    variant: Variant.ghost;
+                    clicked => { root.change-expiry(); }
+                }
             }
             FieldRow { label: "Usage"; value: root.cert.capabilities; }
         }
 
         Divider { }
 
-        SectionLabel { text: "USER IDS"; }
+        HorizontalLayout {
+            SectionLabel { text: "USER IDS"; horizontal-stretch: 1; }
+            if root.owned: Btn {
+                text: "Add…";
+                variant: Variant.ghost;
+                clicked => { root.add-user-id(); }
+            }
+        }
         VerticalLayout {
             spacing: Theme.s2;
             for uid in root.user-ids: HorizontalLayout {
@@ -1017,6 +1037,11 @@ export component DetailsDialog inherits DialogShell {
                 }
                 if uid.is-primary: Pill { text: "primary"; tone: Tone.accent; }
                 if uid.revoked: Pill { text: "revoked"; tone: Tone.danger; }
+                if root.owned && !uid.revoked && !uid.is-primary: Btn {
+                    glyph: Icons.revoke;
+                    variant: Variant.ghost;
+                    clicked => { root.revoke-user-id(uid.text); }
+                }
             }
         }
 
@@ -1103,6 +1128,84 @@ export component DetailsDialog inherits DialogShell {
                 text: "Close";
                 variant: Variant.primary;
                 clicked => { root.dismissed(); }
+            }
+        }
+    }
+}
+
+export component LifecycleDialog inherits DialogShell {
+    /// 0 change expiry, 1 add a user ID, 2 revoke a user ID
+    in property <int> mode;
+    in property <string> target;
+    in property <bool> busy;
+    callback run(int, string, string, string);
+
+    property <string> value;
+    property <string> password;
+    property <int> expiry: 0;
+
+    title: root.mode == 0 ? "Change expiry"
+        : root.mode == 1 ? "Add a user ID" : "Revoke a user ID";
+    subtitle: root.mode == 0
+        ? "Extend, shorten, or remove the expiry date. An expiring key can be "
+          + "brought back after it has lapsed."
+        : root.mode == 1
+            ? "Bind another name and address to this key. Publish the key again "
+              + "afterwards so others see it."
+            : "Withdraw " + root.target + ". It stays on the key so anyone with "
+              + "an older copy can see it was retracted, rather than simply not "
+              + "knowing about it.";
+    card-width: 480px;
+
+    VerticalLayout {
+        spacing: Theme.s3;
+
+        if root.mode == 0: Select {
+            model: ["in 2 years", "in 1 year", "in 5 years", "never"];
+            enabled: !root.busy;
+            current: root.expiry;
+            changed(index) => { root.expiry = index; }
+        }
+
+        if root.mode == 1: Field {
+            placeholder: "Name <name@example.org>";
+            enabled: !root.busy;
+            edited(text) => { root.value = text; }
+        }
+
+        if root.mode == 2: Field {
+            placeholder: "Note for whoever reads this later (optional)";
+            enabled: !root.busy;
+            edited(text) => { root.value = text; }
+        }
+
+        Field {
+            placeholder: "Passphrase for the key (if any)";
+            secret: true;
+            enabled: !root.busy;
+            edited(text) => { root.password = text; }
+        }
+
+        Divider { }
+
+        HorizontalLayout {
+            spacing: Theme.s2;
+            alignment: end;
+            Btn {
+                text: "Cancel";
+                variant: Variant.ghost;
+                enabled: !root.busy;
+                clicked => { root.dismissed(); }
+            }
+            Btn {
+                text: root.busy ? "Working…"
+                    : root.mode == 0 ? "Set expiry"
+                    : root.mode == 1 ? "Add user ID" : "Revoke user ID";
+                variant: root.mode == 2 ? Variant.danger : Variant.primary;
+                enabled: !root.busy && (root.mode != 1 || root.value != "");
+                clicked => {
+                    root.run(root.mode, "\{root.expiry}", root.value, root.password);
+                }
             }
         }
     }

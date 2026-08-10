@@ -11,6 +11,7 @@ use std::time::Duration;
 use rgpg_core::cert::format_time;
 use rgpg_core::certify::{self, Certification, CertifyRequest};
 use rgpg_core::keygen::{self, KeyGenRequest, KeyType};
+use rgpg_core::lifecycle;
 use rgpg_core::ops::{self, InputKind, VerifyResult};
 use rgpg_core::revoke::{self, Reason, RevokeRequest};
 use rgpg_core::{CertSummary, Store, wot};
@@ -274,6 +275,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     wire_certify(&ui, &state);
     wire_revoke(&ui, &state);
     wire_notepad(&ui, &state);
+    wire_lifecycle(&ui, &state);
 
     ui.run()?;
     Ok(())
@@ -1186,6 +1188,122 @@ fn reselect(ui: &AppWindow, state: &Shared, fingerprint: &str) {
     ui.set_detail(to_row(&summary));
     ui.set_has_selection(true);
     push_certifications(ui, &guard, &summary);
+}
+
+// ------------------------------------------------------------------ lifecycle
+
+fn wire_lifecycle(ui: &AppWindow, state: &Shared) {
+    let open = |ui: &AppWindow, mode: i32, target: SharedString| {
+        ui.set_lifecycle_mode(mode);
+        ui.set_lifecycle_target(target);
+        ui.set_lifecycle_open(true);
+    };
+
+    ui.on_open_expiry({
+        let ui_weak = ui.as_weak();
+        move || {
+            let ui = ui_weak.unwrap();
+            open(&ui, 0, SharedString::new());
+        }
+    });
+    ui.on_open_add_user_id({
+        let ui_weak = ui.as_weak();
+        move || {
+            let ui = ui_weak.unwrap();
+            open(&ui, 1, SharedString::new());
+        }
+    });
+    ui.on_open_revoke_user_id({
+        let ui_weak = ui.as_weak();
+        move |user_id| {
+            let ui = ui_weak.unwrap();
+            open(&ui, 2, user_id);
+        }
+    });
+
+    ui.on_lifecycle_run({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |mode, expiry, value, password| {
+            let ui = ui_weak.unwrap();
+            let fingerprint = ui.get_detail().fingerprint.to_string();
+            let target = ui.get_lifecycle_target().to_string();
+            ui.set_busy(true);
+            ui.set_status("Working…".into());
+
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let (expiry, value, password) =
+                (expiry.to_string(), value.to_string(), password.to_string());
+            std::thread::spawn(move || {
+                let outcome = run_lifecycle(
+                    &state,
+                    mode,
+                    &fingerprint,
+                    &target,
+                    &expiry,
+                    &value,
+                    &password,
+                );
+                let _ = slint::invoke_from_event_loop(move || {
+                    let ui = ui_weak.unwrap();
+                    ui.set_busy(false);
+                    match outcome {
+                        Ok((message, fingerprint)) => {
+                            ui.set_lifecycle_open(false);
+                            reload(&ui, &state);
+                            reselect(&ui, &state, &fingerprint);
+                            ui.set_status(message.into());
+                        }
+                        Err(message) => ui.set_status(message.into()),
+                    }
+                });
+            });
+        }
+    });
+}
+
+fn run_lifecycle(
+    state: &Shared,
+    mode: i32,
+    fingerprint: &str,
+    target: &str,
+    expiry: &str,
+    value: &str,
+    password: &str,
+) -> Result<(String, String), String> {
+    let guard = state.lock().unwrap();
+    let password = Some(password).filter(|p| !p.is_empty());
+
+    match mode {
+        0 => {
+            let index: i32 = expiry.parse().unwrap_or(0);
+            lifecycle::set_expiry(&guard.store, fingerprint, expiry_from_index(index), password)
+                .map_err(|e| format!("Could not change the expiry: {e}"))?;
+            Ok((
+                match expiry_from_index(index) {
+                    Some(_) => "Expiry updated. Publish the key again so others see it.",
+                    None => "Expiry removed. Publish the key again so others see it.",
+                }
+                .to_string(),
+                fingerprint.to_string(),
+            ))
+        }
+        1 => {
+            lifecycle::add_user_id(&guard.store, fingerprint, value, password)
+                .map_err(|e| format!("Could not add the user ID: {e}"))?;
+            Ok((
+                "User ID added. Publish the key again so others see it.".to_string(),
+                fingerprint.to_string(),
+            ))
+        }
+        _ => {
+            lifecycle::revoke_user_id(&guard.store, fingerprint, target, value, password)
+                .map_err(|e| format!("Could not revoke the user ID: {e}"))?;
+            Ok((
+                "User ID revoked. Publish the key so others stop using it.".to_string(),
+                fingerprint.to_string(),
+            ))
+        }
+    }
 }
 
 // -------------------------------------------------------------------- notepad
