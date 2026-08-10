@@ -294,7 +294,7 @@ YubiKey.
 correctly identified: all three of the card's subkeys, encryption included,
 match the agent's keys by keygrip and report the right smartcard serial. The
 failure is in the PKESK decryption call itself, not in finding the key, and is
-most likely the card's separate decryption PIN. The `#[ignore]`d test
+the agent rejecting it with `Inappropriate ioctl for device <Pinentry>` — no terminal or display to raise a PIN prompt on. Signing and certifying escape it only while their PIN is cached, so this is one bug, not three. Passing gpg's usual `OPTION ttyname=/display=` lines on connect is the obvious fix and does not work as written: a rejected OPTION leaves the Assuan connection returning nothing and key enumeration silently goes empty. Whatever lands here must check each OPTION's reply. The `#[ignore]`d test
 `decrypts_and_certifies_through_the_agent` fails at that assertion on purpose,
 so the gap is not forgotten.
 

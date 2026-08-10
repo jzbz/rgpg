@@ -67,6 +67,18 @@ fn connect() -> Result<Agent> {
     })
 }
 
+// Note for whoever picks up card decryption. The agent fails it with
+// "Inappropriate ioctl for device <Pinentry>": not a card fault, but the
+// agent having no terminal or display to raise its PIN prompt on. Signing
+// escapes it only because that PIN is usually cached already.
+//
+// Sending gpg's usual `OPTION ttyname=/ttytype=/display=` lines on connect is
+// the obvious fix and does not work as written: an OPTION the agent rejects
+// leaves the Assuan connection in a state where later commands return
+// nothing, and key enumeration silently goes empty — verified, the card
+// stopped being found at all. Whatever lands here must check each OPTION's
+// reply instead of discarding it.
+
 /// Whether a gpg-agent is reachable at all.
 ///
 /// Used to decide whether to offer card-backed keys in the UI, so a machine
@@ -364,6 +376,29 @@ mod tests {
         // for this certificate, so success can only come from the agent.
         let mut ciphertext = Vec::new();
         crate::ops::encrypt(&[card.clone()], None, b"for the card only", &mut ciphertext).unwrap();
+
+        // Surface whichever of the two steps is actually failing.
+        {
+            use sequoia_openpgp::crypto::Decryptor;
+            use sequoia_openpgp::parse::Parse;
+            let pile = sequoia_openpgp::PacketPile::from_bytes(&ciphertext).unwrap();
+            for packet in pile.into_children() {
+                if let sequoia_openpgp::Packet::PKESK(pkesk) = packet {
+                    match decryptor_for(&card) {
+                        Ok(mut pair) => {
+                            eprintln!("  decryptor_for: ok, key {}", pair.public().fingerprint());
+                            // PKESK::decrypt swallows the Decryptor error into
+                            // None; call the decryptor directly to see it.
+                            match pair.decrypt(pkesk.esk(), None) {
+                                Ok(_) => eprintln!("  decryptor.decrypt: ok"),
+                                Err(e) => eprintln!("  decryptor.decrypt: {e:#}"),
+                            }
+                        }
+                        Err(e) => eprintln!("  decryptor_for failed: {e}"),
+                    }
+                }
+            }
+        }
 
         let mut plaintext = Vec::new();
         let result = crate::ops::decrypt(&store, &ciphertext, None, &mut plaintext).unwrap();
