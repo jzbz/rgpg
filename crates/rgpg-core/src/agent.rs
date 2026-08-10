@@ -61,16 +61,13 @@ fn runtime() -> Result<&'static Runtime> {
 
 /// Path of the unrestricted agent socket.
 ///
-/// Modern GnuPG puts its sockets under the XDG runtime directory, not in the
-/// home directory — `~/.gnupg/S.gpg-agent` usually does not exist at all. That
-/// matters: `connect_to_default` otherwise finds the *restricted* socket,
-/// which rejects `OPTION display` and leaves pinentry with nowhere to prompt.
+/// Modern GnuPG puts its sockets under the XDG runtime directory;
+/// `~/.gnupg/S.gpg-agent` usually does not exist at all.
 fn full_socket() -> Option<std::path::PathBuf> {
     let mut candidates = Vec::new();
     if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
         candidates.push(std::path::PathBuf::from(runtime).join("gnupg/S.gpg-agent"));
     }
-    // Fall back to the classic location for older GnuPG layouts.
     if let Some(home) = std::env::var_os("GNUPGHOME")
         .map(std::path::PathBuf::from)
         .or_else(|| dirs::home_dir().map(|h| h.join(".gnupg")))
@@ -80,79 +77,33 @@ fn full_socket() -> Option<std::path::PathBuf> {
     candidates.into_iter().find(|p| p.exists())
 }
 
-/// Tell the agent where to raise its pinentry, the way gpg does on every
-/// connection.
-///
-/// Each reply is checked. An `OPTION` the agent rejects leaves the Assuan
-/// connection answering nothing to later commands — key enumeration goes
-/// silently empty and the card stops being found — so the first failure aborts
-/// and the caller starts a clean connection instead of limping on.
-async fn set_pinentry_context(agent: &mut Agent) -> std::result::Result<(), String> {
-    let options = [
-        ("ttyname", std::env::var("GPG_TTY").ok()),
-        ("ttytype", std::env::var("TERM").ok()),
-        ("display", std::env::var("DISPLAY").ok()),
-        ("xauthority", std::env::var("XAUTHORITY").ok()),
-        (
-            "putenv",
-            std::env::var("WAYLAND_DISPLAY")
-                .ok()
-                .map(|w| format!("WAYLAND_DISPLAY={w}")),
-        ),
-    ];
-
-    for (option, value) in options {
-        let Some(value) = value.filter(|v| !v.is_empty()) else {
-            continue;
-        };
-        agent
-            .send_simple(format!("OPTION {option}={value}"))
-            .await
-            .map_err(|e| format!("{option}: {e}"))?;
-    }
-    Ok(())
-}
-
 fn connect() -> Result<Agent> {
     runtime()?.block_on(async {
-        let connect = || async {
-            // Prefer the full socket. `connect_to_default` can land on
-            // gpg-agent's restricted socket (S.gpg-agent.extra), which accepts
-            // a deliberately small command set and rejects `OPTION display`
-            // with "Unknown IPC command" — leaving pinentry with nowhere to
-            // prompt, and card decryption unable to ask for its PIN.
-            if let Some(socket) = full_socket()
-                && let Ok(agent) = Agent::connect_to(&socket).await
-            {
-                return Ok(agent);
-            }
-            Agent::connect_to_default()
-                .await
-                .map_err(|e| Error::invalid(format!("no gpg-agent to talk to: {e}")))
-        };
-
-        let mut agent = connect().await?;
-        if let Err(e) = set_pinentry_context(&mut agent).await {
-            // Without a prompt target the agent can still do anything whose PIN
-            // is cached, so a fresh connection beats no connection.
-            log_once(&e);
-            agent = connect().await?;
+        if let Some(socket) = full_socket()
+            && let Ok(agent) = Agent::connect_to(&socket).await
+        {
+            return Ok(agent);
         }
-        Ok(agent)
+        Agent::connect_to_default()
+            .await
+            .map_err(|e| Error::invalid(format!("no gpg-agent to talk to: {e}")))
     })
 }
 
-/// Report a pinentry-setup failure once per process rather than on every
-/// connection, which happens for each operation.
-fn log_once(message: &str) {
-    static WARNED: std::sync::Once = std::sync::Once::new();
-    WARNED.call_once(|| {
-        eprintln!(
-            "rgpg: gpg-agent refused the pinentry context ({message}); \
-             it will only manage keys whose PIN is already cached"
-        );
-    });
-}
+// Card decryption still fails: the agent has no pinentry to prompt on, so it
+// can only use keys whose PIN is already cached.
+//
+// Do not fix this by sending gpg's `OPTION ttyname=/display=` lines through
+// `send_simple`. That function loops until the response stream ends, treating
+// a bare `OK` as something to skip past — so for `OPTION`, which answers with
+// nothing but `OK`, it consumes the *following* command's reply and
+// desynchronises the connection. The symptom is an "Unknown IPC command" error
+// attributed to whatever command comes next: send two OPTIONs and the third
+// fails, send four and `list_keys` fails instead. Every apparent rejection
+// chased here was this off-by-one, not the agent objecting.
+//
+// A fix needs a send that stops at the first `OK`, which `send_simple` does not
+// offer; the raw `send`/`next` pair in the same module does.
 
 /// Whether a gpg-agent is reachable at all.
 ///
