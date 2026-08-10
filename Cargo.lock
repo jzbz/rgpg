@@ -5451,6 +5451,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs",
+ "futures",
  "sequoia-cert-store",
  "sequoia-gpg-agent",
  "sequoia-ipc",

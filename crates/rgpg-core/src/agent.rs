@@ -90,20 +90,32 @@ fn connect() -> Result<Agent> {
     })
 }
 
-// Card decryption still fails: the agent has no pinentry to prompt on, so it
-// can only use keys whose PIN is already cached.
+// Card decryption needs a pinentry the agent can prompt on, and sending gpg's
+// `OPTION display=/ttyname=` lines to provide one has not been made to work:
 //
-// Do not fix this by sending gpg's `OPTION ttyname=/display=` lines through
-// `send_simple`. That function loops until the response stream ends, treating
-// a bare `OK` as something to skip past — so for `OPTION`, which answers with
-// nothing but `OK`, it consumes the *following* command's reply and
-// desynchronises the connection. The symptom is an "Unknown IPC command" error
-// attributed to whatever command comes next: send two OPTIONs and the third
-// fails, send four and `list_keys` fails instead. Every apparent rejection
-// chased here was this off-by-one, not the agent objecting.
+//   * `send_simple` skips past `OK` and reads until the stream ends, so for
+//     `OPTION` — which answers with nothing else — it eats the *following*
+//     command's reply. The symptom is "Unknown IPC command" blamed on whatever
+//     came next: two OPTIONs and the third fails, four and `list_keys` fails.
+//   * Driving `send`/`next` directly and returning at the first `OK` fixes that
+//     one, and then the *second* OPTION closes the connection: the early return
+//     leaves the client's write state machine mid-transition.
 //
-// A fix needs a send that stops at the first `OK`, which `send_simple` does not
-// offer; the raw `send`/`next` pair in the same module does.
+// Until that is sorted the agent has no prompt target, so it can only use keys
+// whose PIN is already cached. Signing and certifying on a card work in that
+// state; decryption does not.
+
+/// Report a pinentry-setup failure once per process, not once per operation.
+fn log_once(message: &str) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    let message = message.to_string();
+    WARNED.call_once(move || {
+        eprintln!(
+            "rgpg: gpg-agent refused the pinentry context ({message}); it will \
+             only use keys whose PIN is already cached"
+        );
+    });
+}
 
 /// Whether a gpg-agent is reachable at all.
 ///
