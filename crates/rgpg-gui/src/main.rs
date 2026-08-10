@@ -1831,31 +1831,42 @@ fn run_notepad(
     password: &str,
     secret: &str,
 ) -> Result<(String, String, i32, Vec<rgpg_core::ops::SignatureReport>), String> {
-    let guard = state.lock().unwrap();
+    // Snapshot what is needed and release the lock: everything below is I/O,
+    // and a card PIN prompt can hold it for a minute while the UI waits.
+    let (store, signers, chosen) = {
+        let guard = state.lock().unwrap();
+        (
+            guard.store.clone(),
+            guard.se_signers.clone(),
+            guard
+                .se_recipients
+                .iter()
+                .filter(|r| r.selected)
+                .map(|r| (r.fingerprint.clone(), r.label.clone()))
+                .collect::<Vec<_>>(),
+        )
+    };
     let password = Some(password).filter(|p| !p.is_empty());
 
     // Return types inferred: naming them would mean importing a Sequoia
     // type into the GUI, which this crate deliberately avoids.
-    let signer = |guard: &State| {
-        let (fingerprint, _) = guard
-            .se_signers
+    let signer = || {
+        let (fingerprint, _) = signers
             .get(signer_index.max(0) as usize)
             .ok_or_else(|| "Choose a key to sign with".to_string())?;
-        guard
-            .store
+        store
             .secret_cert(fingerprint)
-            .or_else(|_| guard.store.lookup(fingerprint))
+            .or_else(|_| store.lookup(fingerprint))
             .map_err(|e| format!("Signing key unavailable: {e}"))
     };
 
-    let recipients = |guard: &State| {
+    let recipients = || {
         let mut out = Vec::new();
-        for entry in guard.se_recipients.iter().filter(|r| r.selected) {
+        for (fingerprint, label) in &chosen {
             out.push(
-                guard
-                    .store
-                    .lookup(&entry.fingerprint)
-                    .map_err(|e| format!("Recipient {} unavailable: {e}", entry.label))?,
+                store
+                    .lookup(fingerprint)
+                    .map_err(|e| format!("Recipient {label} unavailable: {e}"))?,
             );
         }
         // A password on its own is a complete instruction; only object when
@@ -1871,7 +1882,7 @@ fn run_notepad(
         // Cleartext, not detached: a detached signature is useless in a text
         // box, since there is nowhere to put the file it covers.
         0 => {
-            let cert = signer(&guard)?;
+            let cert = signer()?;
             ops::sign_cleartext(&cert, password, text.as_bytes(), &mut output)
                 .map_err(|e| format!("Signing failed: {e}"))?;
             Ok((
@@ -1882,8 +1893,8 @@ fn run_notepad(
             ))
         }
         1 | 2 => {
-            let certs = recipients(&guard)?;
-            let signing = if action == 2 { Some(signer(&guard)?) } else { None };
+            let certs = recipients()?;
+            let signing = if action == 2 { Some(signer()?) } else { None };
             let passwords: Vec<String> = if secret.is_empty() {
                 Vec::new()
             } else {
@@ -1913,7 +1924,7 @@ fn run_notepad(
             // Cleartext-signed text carries its own content, so it is verified
             // rather than decrypted.
             if text.contains("-----BEGIN PGP SIGNED MESSAGE-----") {
-                let (verified, result) = ops::verify_inline(&guard.store, text.as_bytes())
+                let (verified, result) = ops::verify_inline(&store, text.as_bytes())
                     .map_err(|e| format!("Verification failed: {e}"))?;
                 let (summary, tone) = if result.all_good() {
                     ("Signature verified".to_string(), 1)
@@ -1922,7 +1933,7 @@ fn run_notepad(
                 };
                 return Ok((string_of(verified), summary, tone, result.signatures));
             }
-            let result = ops::decrypt(&guard.store, text.as_bytes(), password, &mut output)
+            let result = ops::decrypt(&store, text.as_bytes(), password, &mut output)
                 .map_err(|e| format!("Decryption failed: {e}"))?;
 
             let (summary, tone) = if result.signatures.is_empty() {
