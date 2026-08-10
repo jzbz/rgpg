@@ -205,6 +205,40 @@ mod tests {
         assert_eq!(percent_encode("plain-name.1_x~"), "plain-name.1_x~");
     }
 
+    /// Against the real network, so `#[ignore]`d: it needs an internet
+    /// connection and depends on other people's servers staying up.
+    #[test]
+    #[ignore = "hits the network"]
+    fn finds_a_certificate_on_the_live_network() {
+        // A long-standing WKD deployment, used as the example in several
+        // OpenPGP tutorials.
+        match lookup_wkd("wiktor@metacode.biz") {
+            Ok(found) if !found.is_empty() => {
+                let summary = crate::CertSummary::from_cert(&found[0].cert);
+                eprintln!(
+                    "WKD: {} {} via {}",
+                    summary.fingerprint, summary.primary_user_id, found[0].source.as_str()
+                );
+                assert_eq!(found[0].source, Source::WebKeyDirectory);
+            }
+            Ok(_) => eprintln!("WKD: nothing served for that address"),
+            Err(e) => eprintln!("WKD: {e}"),
+        }
+
+        // keys.openpgp.org serves by fingerprint without verification.
+        let fingerprint = "653909A2F0E37C106F5FAF546C8857E0D8E8F074";
+        match lookup_keyserver(fingerprint) {
+            Ok(found) if !found.is_empty() => {
+                let summary = crate::CertSummary::from_cert(&found[0].cert);
+                eprintln!("keyserver: {} {}", summary.fingerprint, summary.primary_user_id);
+                assert_eq!(found[0].source, Source::Keyserver);
+                assert_eq!(summary.fingerprint, fingerprint);
+            }
+            Ok(_) => eprintln!("keyserver: nothing served"),
+            Err(e) => eprintln!("keyserver: {e}"),
+        }
+    }
+
     #[test]
     fn rejects_input_that_is_not_an_address() {
         assert!(lookup_wkd("not-an-address").is_err());

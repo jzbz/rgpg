@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme, Icons, Icon } from "theme.slint";
 import { Btn, Check, DialogShell, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Select, TextArea, Tone, Variant } from "widgets.slint";
-import { CertRow, CertificationRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow } from "types.slint";
+import { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow } from "types.slint";
 
 // A file slot: label, the chosen path (or a hint), and a Choose button.
 component FilePick inherits VerticalLayout {
@@ -1206,6 +1206,110 @@ export component LifecycleDialog inherits DialogShell {
                 clicked => {
                     root.run(root.mode, "\{root.expiry}", root.value, root.password);
                 }
+            }
+        }
+    }
+}
+
+export component LookupDialog inherits DialogShell {
+    in property <[LookupRow]> results;
+    in property <string> status;
+    in property <bool> searched;
+    in property <bool> busy;
+    callback search(string);
+    callback import-result(int);
+
+    property <string> query;
+
+    title: "Look up a certificate";
+    subtitle: "Search the address's own domain first, then a keyserver. "
+        + "Nothing is added to your store until you import it.";
+    card-width: 560px;
+
+    VerticalLayout {
+        spacing: Theme.s3;
+
+        HorizontalLayout {
+            spacing: Theme.s2;
+            Field {
+                placeholder: "name@example.org, or a fingerprint";
+                glyph: Icons.search;
+                enabled: !root.busy;
+                horizontal-stretch: 1;
+                edited(text) => { root.query = text; }
+                accepted => { root.search(root.query); }
+            }
+            Btn {
+                text: root.busy ? "Searching…" : "Search";
+                variant: Variant.primary;
+                enabled: !root.busy && root.query != "";
+                clicked => { root.search(root.query); }
+            }
+        }
+
+        if root.status != "": Text {
+            text: root.status;
+            color: Theme.text-dim;
+            font-size: Theme.t-sm;
+            wrap: word-wrap;
+        }
+
+        if root.results.length > 0: VerticalLayout {
+            spacing: Theme.s2;
+            for entry[index] in root.results: HorizontalLayout {
+                spacing: Theme.s3;
+
+                Monogram {
+                    initials: entry.initials;
+                    tint: Theme.monograms[entry.tint-index];
+                    size: 32px;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                VerticalLayout {
+                    spacing: 1px;
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text {
+                        text: entry.primary-user-id;
+                        color: Theme.text;
+                        font-size: Theme.t-md;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: entry.fingerprint-pretty;
+                        color: Theme.text-faint;
+                        font-size: Theme.t-xs;
+                        font-family: "monospace";
+                        overflow: elide;
+                    }
+                }
+
+                Pill {
+                    text: entry.source;
+                    tone: entry.source == "web key directory" ? Tone.ok : Tone.neutral;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                Btn {
+                    text: entry.already-known ? "Update" : "Import";
+                    variant: Variant.secondary;
+                    enabled: !root.busy;
+                    y: (parent.height - self.height) / 2;
+                    clicked => { root.import-result(index); }
+                }
+            }
+        }
+
+        Divider { }
+
+        HorizontalLayout {
+            alignment: end;
+            Btn {
+                text: "Close";
+                variant: Variant.ghost;
+                enabled: !root.busy;
+                clicked => { root.dismissed(); }
             }
         }
     }

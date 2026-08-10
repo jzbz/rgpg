@@ -84,6 +84,9 @@ struct State {
     /// (fingerprint, label) of our own certification-capable keys.
     certify_certifiers: Vec<(String, String)>,
 
+    /// Certificates found on the network, not yet in the store.
+    lookup_results: Vec<rgpg_core::keyserver::Found>,
+
     /// Fingerprint the revoke dialog is about, and whether it is withdrawing a
     /// certification rather than revoking the key itself.
     revoke_target: Option<String>,
@@ -263,6 +266,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         certify_target: None,
         certify_user_ids: Vec::new(),
         certify_certifiers: Vec::new(),
+        lookup_results: Vec::new(),
         revoke_target: None,
         revoke_certification: false,
     }));
@@ -276,6 +280,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     wire_revoke(&ui, &state);
     wire_notepad(&ui, &state);
     wire_lifecycle(&ui, &state);
+    wire_lookup(&ui, &state);
 
     ui.run()?;
     Ok(())
@@ -1188,6 +1193,119 @@ fn reselect(ui: &AppWindow, state: &Shared, fingerprint: &str) {
     ui.set_detail(to_row(&summary));
     ui.set_has_selection(true);
     push_certifications(ui, &guard, &summary);
+}
+
+// --------------------------------------------------------------------- lookup
+
+fn wire_lookup(ui: &AppWindow, state: &Shared) {
+    ui.on_open_lookup({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let ui = ui_weak.unwrap();
+            state.lock().unwrap().lookup_results.clear();
+            ui.set_lookup_results(ModelRc::new(VecModel::from(Vec::<LookupRow>::new())));
+            ui.set_lookup_status(SharedString::new());
+            ui.set_lookup_searched(false);
+            ui.set_lookup_open(true);
+        }
+    });
+
+    ui.on_lookup_run({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |query| {
+            let ui = ui_weak.unwrap();
+            ui.set_busy(true);
+            ui.set_lookup_status("Searching…".into());
+
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let query = query.to_string();
+            std::thread::spawn(move || {
+                // Off the UI thread: this is a network round trip that can sit
+                // on a DNS timeout for seconds.
+                let outcome = rgpg_core::keyserver::lookup(&query);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let ui = ui_weak.unwrap();
+                    ui.set_busy(false);
+                    ui.set_lookup_searched(true);
+
+                    match outcome {
+                        Ok(found) => {
+                            let mut guard = state.lock().unwrap();
+                            let rows: Vec<LookupRow> = found
+                                .iter()
+                                .map(|f| {
+                                    let summary = rgpg_core::CertSummary::from_cert(&f.cert);
+                                    let (name, email) = split_user_id(&summary.primary_user_id);
+                                    LookupRow {
+                                        primary_user_id: summary.primary_user_id.clone().into(),
+                                        fingerprint_pretty: summary.fingerprint_pretty().into(),
+                                        source: f.source.as_str().into(),
+                                        initials: initials(&name, &email, &summary.key_id).into(),
+                                        tint_index: tint_index(&summary.fingerprint),
+                                        already_known: guard
+                                            .store
+                                            .lookup(&summary.fingerprint)
+                                            .is_ok(),
+                                    }
+                                })
+                                .collect();
+                            let count = rows.len();
+                            guard.lookup_results = found;
+                            drop(guard);
+
+                            ui.set_lookup_results(ModelRc::new(VecModel::from(rows)));
+                            ui.set_lookup_status(
+                                if count == 0 {
+                                    "Nothing found for that.".to_string()
+                                } else {
+                                    format!("{count} certificate(s) found. Check the fingerprint against the owner before trusting it.")
+                                }
+                                .into(),
+                            );
+                        }
+                        Err(e) => {
+                            ui.set_lookup_results(ModelRc::new(VecModel::from(
+                                Vec::<LookupRow>::new(),
+                            )));
+                            ui.set_lookup_status(format!("Lookup failed: {e}").into());
+                        }
+                    }
+                });
+            });
+        }
+    });
+
+    ui.on_lookup_import({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |index| {
+            let ui = ui_weak.unwrap();
+            let outcome = {
+                let guard = state.lock().unwrap();
+                match usize::try_from(index)
+                    .ok()
+                    .and_then(|i| guard.lookup_results.get(i))
+                {
+                    Some(found) => guard.store.insert(&found.cert).map(|()| {
+                        rgpg_core::CertSummary::from_cert(&found.cert).primary_user_id
+                    }),
+                    None => return,
+                }
+            };
+
+            match outcome {
+                Ok(who) => {
+                    reload(&ui, &state);
+                    // Imported, not trusted: a fetched certificate is
+                    // unauthenticated until somebody certifies it.
+                    ui.set_lookup_status(
+                        format!("Imported {who}. It is unverified until you certify it.").into(),
+                    );
+                    ui.set_status(format!("Imported {who} from the network").into());
+                }
+                Err(e) => ui.set_lookup_status(format!("Import failed: {e}").into()),
+            }
+        }
+    });
 }
 
 // ------------------------------------------------------------------ lifecycle

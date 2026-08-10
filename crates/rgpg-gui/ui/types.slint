@@ -81,3 +81,13 @@ export struct UserIdDetailRow {
     revoked: bool,
     self-signed: string,
 }
+
+// A certificate found on the network, not yet in the store.
+export struct LookupRow {
+    primary-user-id: string,
+    fingerprint-pretty: string,
+    source: string,
+    initials: string,
+    tint-index: int,
+    already-known: bool,
+}

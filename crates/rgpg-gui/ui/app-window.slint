@@ -3,10 +3,10 @@ import { Theme, Icons, Icon } from "theme.slint";
 import {
     Btn, Check, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Tone, Variant,
 } from "widgets.slint";
-import { CertRow, CertificationRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow } from "types.slint";
-import { CertifyDialog, DecryptVerifyDialog, DetailsDialog, KeygenDialog, LifecycleDialog, NotepadDialog, RevokeDialog, SignEncryptDialog } from "dialogs.slint";
+import { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow } from "types.slint";
+import { CertifyDialog, DecryptVerifyDialog, DetailsDialog, KeygenDialog, LifecycleDialog, LookupDialog, NotepadDialog, RevokeDialog, SignEncryptDialog } from "dialogs.slint";
 
-export { CertRow, CertificationRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow }
+export { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow }
 
 component RailItem inherits Rectangle {
     in property <string> text;
@@ -260,6 +260,15 @@ export component AppWindow inherits Window {
     in-out property <bool> lifecycle-open: false;
     in property <int> lifecycle-mode: 0;
     in property <string> lifecycle-target: "";
+    // --- Network lookup ---------------------------------------------------
+    in-out property <bool> lookup-open: false;
+    in property <[LookupRow]> lookup-results;
+    in property <string> lookup-status: "";
+    in property <bool> lookup-searched: false;
+    callback open-lookup();
+    callback lookup-run(string);
+    callback lookup-import(int);
+
     callback open-expiry();
     callback open-add-user-id();
     callback open-revoke-user-id(string);
@@ -415,6 +424,13 @@ export component AppWindow inherits Window {
                         enabled: !root.busy;
                         y: (parent.height - self.height) / 2;
                         clicked => { root.import-file(); }
+                    }
+                    Btn {
+                        text: "Look up";
+                        glyph: Icons.search;
+                        enabled: !root.busy;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.open-lookup(); }
                     }
                     Btn {
                         text: "Export";
@@ -859,6 +875,16 @@ export component AppWindow inherits Window {
         change-expiry => { root.details-open = false; root.open-expiry(); }
         add-user-id => { root.details-open = false; root.open-add-user-id(); }
         revoke-user-id(uid) => { root.details-open = false; root.open-revoke-user-id(uid); }
+    }
+
+    if root.lookup-open: LookupDialog {
+        busy: root.busy;
+        results: root.lookup-results;
+        status: root.lookup-status;
+        searched: root.lookup-searched;
+        dismissed => { root.lookup-open = false; }
+        search(query) => { root.lookup-run(query); }
+        import-result(index) => { root.lookup-import(index); }
     }
 
     if root.lifecycle-open: LifecycleDialog {
