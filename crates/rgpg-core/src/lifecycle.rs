@@ -8,7 +8,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use sequoia_openpgp::cert::UserIDRevocationBuilder;
+use sequoia_openpgp::cert::{SubkeyRevocationBuilder, UserIDRevocationBuilder};
 use sequoia_openpgp::packet::signature::SignatureBuilder;
 use sequoia_openpgp::packet::{Signature, UserID};
 use sequoia_openpgp::types::{ReasonForRevocation, SignatureType};
@@ -133,6 +133,35 @@ pub fn revoke_user_id(
     store_both(store, cert, vec![signature])
 }
 
+/// Retract a single subkey, leaving the rest of the certificate intact.
+///
+/// Useful when one subkey's secret is exposed but the primary key is not: the
+/// identity survives and only the compromised part is withdrawn.
+pub fn revoke_subkey(
+    store: &Store,
+    fingerprint: &str,
+    subkey_fingerprint: &str,
+    message: &str,
+    password: Option<&str>,
+) -> Result<Cert> {
+    let cert = store.secret_cert(fingerprint)?;
+    let wanted = subkey_fingerprint.to_uppercase();
+
+    let subkey = cert
+        .keys()
+        .subkeys()
+        .map(|ka| ka.key().clone())
+        .find(|key| key.fingerprint().to_hex().eq_ignore_ascii_case(&wanted))
+        .ok_or_else(|| Error::invalid(format!("{subkey_fingerprint} is not a subkey of this key")))?;
+
+    let mut signer = unlock_primary(&cert, password)?;
+    let signature = SubkeyRevocationBuilder::new()
+        .set_reason_for_revocation(ReasonForRevocation::KeyRetired, message.as_bytes())?
+        .build(&mut signer, &cert, &subkey, None)?;
+
+    store_both(store, cert, vec![signature])
+}
+
 /// Merge new self-signatures into both halves of the store.
 fn store_both(store: &Store, cert: Cert, signatures: Vec<Signature>) -> Result<Cert> {
     let fingerprint = cert.fingerprint().to_hex();
@@ -249,6 +278,33 @@ mod tests {
         // Adding the same identity twice is refused rather than duplicated.
         assert!(add_user_id(&store, &fingerprint, "Alice <alice@work.example>", None).is_err());
         assert!(add_user_id(&store, &fingerprint, "   ", None).is_err());
+    }
+
+    #[test]
+    fn revokes_one_subkey_and_leaves_the_others() {
+        let (_dir, store, cert) = scratch();
+        let fingerprint = cert.fingerprint().to_hex();
+
+        let before = cert::subkeys(&cert);
+        assert!(before.len() > 1, "the test key should have several subkeys");
+        let victim = before[0].fingerprint.clone();
+
+        let updated =
+            revoke_subkey(&store, &fingerprint, &victim, "secret exposed", None).unwrap();
+
+        let after = cert::subkeys(&updated);
+        assert!(
+            after.iter().find(|k| k.fingerprint == victim).is_some_and(|k| k.revoked),
+            "the named subkey should be revoked"
+        );
+        assert!(
+            after.iter().filter(|k| k.fingerprint != victim).all(|k| !k.revoked),
+            "no other subkey should be touched"
+        );
+        // The certificate itself is still usable.
+        assert_eq!(CertSummary::from_cert(&updated).validity, Validity::Valid);
+
+        assert!(revoke_subkey(&store, &fingerprint, &fingerprint, "", None).is_err());
     }
 
     #[test]

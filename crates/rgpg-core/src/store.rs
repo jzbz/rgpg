@@ -72,6 +72,12 @@ impl Store {
         })
     }
 
+    // Deleting a certificate is not implemented. Unlinking the cert-d file is
+    // not enough: sequoia-cert-store keeps a SQLite index beside it and that
+    // index is authoritative, so a removed certificate is still listed even by
+    // a freshly reopened store. Doing this properly needs removal support in
+    // cert-d, or a different backing store.
+
     /// Where the revocation certificate for `fingerprint` lives.
     pub fn revocation_path(&self, fingerprint: &str) -> PathBuf {
         self.revocations_dir.join(format!("{fingerprint}.rev"))
