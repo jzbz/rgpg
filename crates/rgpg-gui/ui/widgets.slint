@@ -459,9 +459,12 @@ export component DialogShell inherits Rectangle {
 
 /// Multi-line text entry, for the notepad.
 ///
-/// The input is positioned against the root's own size rather than nested in a
-/// ScrollView: a ScrollView sizes its viewport from its content, and a child
-/// whose width comes from that viewport closes a binding loop.
+/// The input is sized from *this* element rather than from the ScrollView it
+/// sits in. Taking the width from the viewport closes a binding loop — the
+/// viewport sizes from its content and the content from the viewport — and
+/// letting the input drive its own height makes the box grow as you type,
+/// because a TextInput reports its content height as a minimum and a layout
+/// honours a minimum over an explicit height.
 export component TextArea inherits Rectangle {
     in property <string> placeholder;
     in property <bool> enabled: true;
@@ -473,21 +476,29 @@ export component TextArea inherits Rectangle {
     border-width: 1px;
     border-color: input.has-focus ? Theme.accent : Theme.border;
     clip: true;
+    // Stops the inner text from pushing the box outwards as it grows.
+    min-height: 0px;
+    max-height: root.height;
 
-    input := TextInput {
+    scroll := ScrollView {
         x: Theme.s3;
         y: Theme.s3;
         width: root.width - 2 * Theme.s3;
         height: root.height - 2 * Theme.s3;
-        color: Theme.text;
-        font-size: Theme.t-md;
-        font-family: "monospace";
-        single-line: false;
-        wrap: word-wrap;
-        read-only: !root.enabled;
-        selection-background-color: Theme.accent;
-        selection-foreground-color: Theme.accent-ink;
-        edited => { root.edited(self.text); }
+        viewport-width: self.visible-width;
+
+        input := TextInput {
+            width: scroll.visible-width;
+            color: Theme.text;
+            font-size: Theme.t-md;
+            font-family: "monospace";
+            single-line: false;
+            wrap: word-wrap;
+            read-only: !root.enabled;
+            selection-background-color: Theme.accent;
+            selection-foreground-color: Theme.accent-ink;
+            edited => { root.edited(self.text); }
+        }
     }
 
     if input.text == "": Text {
