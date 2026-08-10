@@ -1,7 +1,7 @@
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme, Icons, Icon } from "theme.slint";
 import {
-    Btn, Check, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Tone, Variant,
+    Btn, Check, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Select, Tone, Variant,
 } from "widgets.slint";
 import { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow } from "types.slint";
 import { CertifyDialog, DecryptVerifyDialog, DetailsDialog, KeygenDialog, LifecycleDialog, LookupDialog, NotepadDialog, RevokeDialog, SignEncryptDialog } from "dialogs.slint";
@@ -178,6 +178,7 @@ export component AppWindow inherits Window {
     in property <int> count-mine: 0;
     in property <int> count-others: 0;
     in-out property <int> scope: 0;
+    in-out property <int> sort-by: 0;
     in property <string> status: "";
     in property <bool> busy: false;
 
@@ -186,6 +187,7 @@ export component AppWindow inherits Window {
     callback export-selected();
     callback filter-changed(string);
     callback scope-changed(int);
+    callback sort-changed(int);
     callback row-selected(int);
 
     // --- New key pair -----------------------------------------------------
@@ -415,6 +417,15 @@ export component AppWindow inherits Window {
                         width: 300px;
                         y: (parent.height - self.height) / 2;
                         edited(text) => { root.filter-changed(text); }
+                    }
+
+                    Select {
+                        model: ["Mine first", "Name", "Newest", "Expiring soonest"];
+                        width: 150px;
+                        enabled: !root.busy;
+                        current: root.sort-by;
+                        y: (parent.height - self.height) / 2;
+                        changed(index) => { root.sort-by = index; root.sort-changed(index); }
                     }
 
                     Rectangle { horizontal-stretch: 1; }

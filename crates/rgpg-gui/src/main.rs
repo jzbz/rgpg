@@ -19,6 +19,56 @@ use slint::{ModelRc, SharedString, VecModel};
 
 slint::include_modules!();
 
+/// How the list is ordered.
+///
+/// The list is drawn as custom rows rather than a table, so this is a control
+/// rather than clickable column headers — but it is the same idea, and it puts
+/// "expiring soonest" within reach, which a name column never would.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sort {
+    /// Own keys first, then by name. The default: they are the ones a person
+    /// reaches for.
+    MineFirst,
+    Name,
+    Newest,
+    ExpiringSoonest,
+}
+
+impl Sort {
+    fn from_index(index: i32) -> Self {
+        match index {
+            1 => Sort::Name,
+            2 => Sort::Newest,
+            3 => Sort::ExpiringSoonest,
+            _ => Sort::MineFirst,
+        }
+    }
+
+    fn apply(self, certs: &mut [CertSummary]) {
+        let by_name = |c: &CertSummary| c.primary_user_id.to_lowercase();
+        match self {
+            Sort::MineFirst => certs.sort_by(|a, b| {
+                b.has_secret.cmp(&a.has_secret).then_with(|| by_name(a).cmp(&by_name(b)))
+            }),
+            Sort::Name => certs.sort_by_key(by_name),
+            Sort::Newest => certs.sort_by(|a, b| {
+                b.created.cmp(&a.created).then_with(|| by_name(a).cmp(&by_name(b)))
+            }),
+            // Certificates that never expire sort last rather than first: an
+            // absent date is the opposite of urgent.
+            Sort::ExpiringSoonest => certs.sort_by(|a, b| {
+                match (a.expires, b.expires) {
+                    (Some(x), Some(y)) => x.cmp(&y),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+                .then_with(|| by_name(a).cmp(&by_name(b)))
+            }),
+        }
+    }
+}
+
 /// Which slice of the store the list is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Scope {
@@ -66,6 +116,7 @@ struct State {
     shown: Vec<CertSummary>,
     filter: String,
     scope: Scope,
+    sort: Sort,
 
     se_input: Option<PathBuf>,
     se_recipients: Vec<Recipient>,
@@ -257,6 +308,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         shown: Vec::new(),
         filter: String::new(),
         scope: Scope::All,
+        sort: Sort::MineFirst,
         se_input: None,
         se_recipients: Vec::new(),
         se_signers: Vec::new(),
@@ -302,6 +354,15 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
         move |text| {
             let ui = ui_weak.unwrap();
             state.lock().unwrap().filter = text.to_lowercase();
+            apply_filter(&ui, &state);
+        }
+    });
+
+    ui.on_sort_changed({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |index| {
+            let ui = ui_weak.unwrap();
+            state.lock().unwrap().sort = Sort::from_index(index);
             apply_filter(&ui, &state);
         }
     });
@@ -1927,15 +1988,8 @@ fn reload(ui: &AppWindow, state: &Shared) {
         }
     }
 
-    // A stable order beats cert-d's, which is by fingerprint. Own keys first:
-    // they are the ones a user reaches for.
-    guard.all.sort_by(|a, b| {
-        b.has_secret.cmp(&a.has_secret).then_with(|| {
-            a.primary_user_id
-                .to_lowercase()
-                .cmp(&b.primary_user_id.to_lowercase())
-        })
-    });
+    // Ordering belongs to apply_filter, so changing the sort does not
+    // require re-reading the store.
 
     drop(guard);
     apply_filter(ui, state);
@@ -1945,13 +1999,15 @@ fn reload(ui: &AppWindow, state: &Shared) {
 fn apply_filter(ui: &AppWindow, state: &Shared) {
     let mut guard = state.lock().unwrap();
 
-    let (filter, scope) = (guard.filter.clone(), guard.scope);
-    guard.shown = guard
+    let (filter, scope, sort) = (guard.filter.clone(), guard.scope, guard.sort);
+    let mut shown: Vec<CertSummary> = guard
         .all
         .iter()
         .filter(|c| scope.accepts(c) && c.matches(&filter))
         .cloned()
         .collect();
+    sort.apply(&mut shown);
+    guard.shown = shown;
 
     let rows: Vec<CertRow> = guard.shown.iter().map(to_row).collect();
     let total = guard.all.len();
