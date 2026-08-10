@@ -1324,6 +1324,13 @@ fn wire_lifecycle(ui: &AppWindow, state: &Shared) {
             open(&ui, 0, SharedString::new());
         }
     });
+    ui.on_open_publish({
+        let ui_weak = ui.as_weak();
+        move || {
+            let ui = ui_weak.unwrap();
+            open(&ui, 3, SharedString::new());
+        }
+    });
     ui.on_open_add_user_id({
         let ui_weak = ui.as_weak();
         move || {
@@ -1413,13 +1420,44 @@ fn run_lifecycle(
                 fingerprint.to_string(),
             ))
         }
-        _ => {
+        2 => {
             lifecycle::revoke_user_id(&guard.store, fingerprint, target, value, password)
                 .map_err(|e| format!("Could not revoke the user ID: {e}"))?;
             Ok((
                 "User ID revoked. Publish the key so others stop using it.".to_string(),
                 fingerprint.to_string(),
             ))
+        }
+        _ => {
+            // Publish. Only ever the public half — `keyserver::publish` strips
+            // secret key material before it serialises anything.
+            let cert = guard
+                .store
+                .lookup(fingerprint)
+                .map_err(|e| format!("Certificate unavailable: {e}"))?;
+            let published = rgpg_core::keyserver::publish(&cert)
+                .map_err(|e| format!("Publishing failed: {e}"))?;
+
+            let pending: Vec<String> = published
+                .addresses
+                .iter()
+                .filter(|(_, state)| state != "published")
+                .map(|(address, _)| address.clone())
+                .collect();
+
+            // Ask for the confirmation mails, since an unverified address is
+            // stored but never served.
+            let mut message = format!("Published {}", published.fingerprint);
+            if let Some(token) = published.token.as_deref()
+                && !pending.is_empty()
+                && rgpg_core::keyserver::request_verification(token, &pending).is_ok()
+            {
+                message.push_str(&format!(
+                    ". Confirmation mail sent to {}; the address is not served until it is confirmed.",
+                    pending.join(", ")
+                ));
+            }
+            Ok((message, fingerprint.to_string()))
         }
     }
 }

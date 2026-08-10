@@ -189,6 +189,114 @@ fn parse(bytes: &[u8]) -> Result<Vec<Cert>> {
     Ok(out)
 }
 
+/// What a keyserver did with an upload.
+#[derive(Debug, Clone)]
+pub struct Published {
+    /// Fingerprint the server says it stored.
+    pub fingerprint: String,
+    /// Addresses the server will publish once their owner confirms, and the
+    /// state it reports for each.
+    pub addresses: Vec<(String, String)>,
+    /// Handed back so verification mails can be requested for the addresses.
+    pub token: Option<String>,
+}
+
+/// Upload a certificate to the keyserver.
+///
+/// This cannot be undone. A keyserver has no delete: once a certificate is
+/// uploaded it is public, permanently, and so is every user ID on it. Callers
+/// must make that clear before getting here.
+///
+/// Only the public half is ever sent — the secret key material is stripped
+/// first, so a caller that hands over a certificate carrying secrets does not
+/// publish them by accident.
+pub fn publish(cert: &Cert) -> Result<Published> {
+    use sequoia_openpgp::serialize::SerializeInto;
+
+    let public = cert.clone().strip_secret_key_material();
+    let armored = String::from_utf8(public.armored().to_vec()?)
+        .map_err(|_| Error::invalid("the certificate did not armor as text"))?;
+
+    let body = serde_json::json!({ "keytext": armored });
+    let reply = post(&format!("{KEYSERVER}/vks/v1/upload"), body)?;
+
+    Ok(Published {
+        fingerprint: reply
+            .get("key_fpr")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_uppercase(),
+        addresses: reply
+            .get("status")
+            .and_then(|v| v.as_object())
+            .map(|statuses| {
+                statuses
+                    .iter()
+                    .map(|(address, state)| {
+                        (
+                            address.clone(),
+                            state.as_str().unwrap_or("unknown").to_lowercase(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        token: reply
+            .get("token")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
+    })
+}
+
+/// Ask the keyserver to mail each address a confirmation link.
+///
+/// Until an address is confirmed the keyserver stores the certificate but will
+/// not serve it by that address, which is the whole point of a verifying
+/// keyserver: nobody can publish an identity they do not control.
+pub fn request_verification(token: &str, addresses: &[String]) -> Result<()> {
+    if addresses.is_empty() {
+        return Err(Error::invalid("no addresses to verify"));
+    }
+    let body = serde_json::json!({ "token": token, "addresses": addresses });
+    post(&format!("{KEYSERVER}/vks/v1/request-verify"), body)?;
+    Ok(())
+}
+
+fn post(url: &str, body: serde_json::Value) -> Result<serde_json::Value> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Error::invalid(format!("cannot start the network runtime: {e}")))?;
+
+    runtime.block_on(async {
+        let client = reqwest::Client::builder()
+            .timeout(TIMEOUT)
+            .user_agent(concat!("rgpg/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|e| Error::invalid(format!("cannot build an HTTP client: {e}")))?;
+
+        let response = client
+            .post(url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::invalid(format!("upload failed: {e}")))?;
+
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            // The server explains refusals in the body; passing it through
+            // beats reporting a bare status code.
+            return Err(Error::invalid(format!(
+                "the keyserver refused the upload ({status}): {}",
+                text.trim()
+            )));
+        }
+        serde_json::from_str(&text)
+            .map_err(|e| Error::invalid(format!("the keyserver replied with unexpected data: {e}")))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

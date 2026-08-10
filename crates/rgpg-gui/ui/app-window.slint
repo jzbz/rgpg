@@ -270,6 +270,7 @@ export component AppWindow inherits Window {
     callback lookup-import(int);
 
     callback open-expiry();
+    callback open-publish();
     callback open-add-user-id();
     callback open-revoke-user-id(string);
     callback lifecycle-run(int, string, string, string);
@@ -751,6 +752,15 @@ export component AppWindow inherits Window {
                                 wide: true;
                                 enabled: !root.busy;
                                 clicked => { root.open-withdraw(); }
+                            }
+
+                            Btn {
+                                text: "Publish to keyserver…";
+                                glyph: Icons.arrow-out;
+                                variant: Variant.ghost;
+                                wide: true;
+                                enabled: !root.busy && root.detail.has-secret;
+                                clicked => { root.open-publish(); }
                             }
 
                             if root.has-revocation-cert: Btn {

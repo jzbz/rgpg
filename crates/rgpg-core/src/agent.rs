@@ -105,18 +105,6 @@ fn connect() -> Result<Agent> {
 // whose PIN is already cached. Signing and certifying on a card work in that
 // state; decryption does not.
 
-/// Report a pinentry-setup failure once per process, not once per operation.
-fn log_once(message: &str) {
-    static WARNED: std::sync::Once = std::sync::Once::new();
-    let message = message.to_string();
-    WARNED.call_once(move || {
-        eprintln!(
-            "rgpg: gpg-agent refused the pinentry context ({message}); it will \
-             only use keys whose PIN is already cached"
-        );
-    });
-}
-
 /// Whether a gpg-agent is reachable at all.
 ///
 /// Used to decide whether to offer card-backed keys in the UI, so a machine

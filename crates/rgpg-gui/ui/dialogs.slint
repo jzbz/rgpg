@@ -1145,16 +1145,22 @@ export component LifecycleDialog inherits DialogShell {
     property <int> expiry: 0;
 
     title: root.mode == 0 ? "Change expiry"
-        : root.mode == 1 ? "Add a user ID" : "Revoke a user ID";
+        : root.mode == 1 ? "Add a user ID"
+        : root.mode == 2 ? "Revoke a user ID" : "Publish to a keyserver";
     subtitle: root.mode == 0
         ? "Extend, shorten, or remove the expiry date. An expiring key can be "
           + "brought back after it has lapsed."
         : root.mode == 1
             ? "Bind another name and address to this key. Publish the key again "
               + "afterwards so others see it."
-            : "Withdraw " + root.target + ". It stays on the key so anyone with "
-              + "an older copy can see it was retracted, rather than simply not "
-              + "knowing about it.";
+            : root.mode == 2
+                ? "Withdraw " + root.target + ". It stays on the key so anyone "
+                  + "with an older copy can see it was retracted, rather than "
+                  + "simply not knowing about it."
+                : "Upload this certificate to keys.openpgp.org. This cannot be "
+                  + "undone: a keyserver has no delete, so the key and every "
+                  + "user ID on it become public permanently. Only the public "
+                  + "half is sent.";
     card-width: 480px;
 
     VerticalLayout {
@@ -1179,11 +1185,19 @@ export component LifecycleDialog inherits DialogShell {
             edited(text) => { root.value = text; }
         }
 
-        Field {
+        if root.mode != 3: Field {
             placeholder: "Passphrase for the key (if any)";
             secret: true;
             enabled: !root.busy;
             edited(text) => { root.password = text; }
+        }
+
+        if root.mode == 3: Text {
+            text: "Addresses on the key are only served once their owner "
+                + "confirms them by e-mail.";
+            color: Theme.text-dim;
+            font-size: Theme.t-sm;
+            wrap: word-wrap;
         }
 
         Divider { }
@@ -1200,8 +1214,9 @@ export component LifecycleDialog inherits DialogShell {
             Btn {
                 text: root.busy ? "Working…"
                     : root.mode == 0 ? "Set expiry"
-                    : root.mode == 1 ? "Add user ID" : "Revoke user ID";
-                variant: root.mode == 2 ? Variant.danger : Variant.primary;
+                    : root.mode == 1 ? "Add user ID"
+                    : root.mode == 2 ? "Revoke user ID" : "Publish permanently";
+                variant: root.mode >= 2 ? Variant.danger : Variant.primary;
                 enabled: !root.busy && (root.mode != 1 || root.value != "");
                 clicked => {
                     root.run(root.mode, "\{root.expiry}", root.value, root.password);
