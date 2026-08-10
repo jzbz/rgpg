@@ -59,6 +59,15 @@ fn runtime() -> Result<&'static Runtime> {
         .map_err(|e| Error::invalid(format!("cannot start the agent runtime: {e}")))
 }
 
+/// Path of the unrestricted agent socket, if it looks like one is there.
+fn full_socket() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("GNUPGHOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".gnupg")))?;
+    let socket = home.join("S.gpg-agent");
+    socket.exists().then_some(socket)
+}
+
 /// Tell the agent where to raise its pinentry, the way gpg does on every
 /// connection.
 ///
@@ -95,6 +104,16 @@ async fn set_pinentry_context(agent: &mut Agent) -> std::result::Result<(), Stri
 fn connect() -> Result<Agent> {
     runtime()?.block_on(async {
         let connect = || async {
+            // Prefer the full socket. `connect_to_default` can land on
+            // gpg-agent's restricted socket (S.gpg-agent.extra), which accepts
+            // a deliberately small command set and rejects `OPTION display`
+            // with "Unknown IPC command" — leaving pinentry with nowhere to
+            // prompt, and card decryption unable to ask for its PIN.
+            if let Some(socket) = full_socket()
+                && let Ok(agent) = Agent::connect_to(&socket).await
+            {
+                return Ok(agent);
+            }
             Agent::connect_to_default()
                 .await
                 .map_err(|e| Error::invalid(format!("no gpg-agent to talk to: {e}")))
