@@ -9,6 +9,7 @@ pub mod cert;
 pub mod certify;
 pub mod error;
 pub mod keygen;
+pub mod keyserver;
 pub mod lifecycle;
 pub mod ops;
 pub mod revoke;

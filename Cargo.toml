@@ -39,6 +39,13 @@ sequoia-gpg-agent = "0.6"
 sequoia-ipc = { version = "0.36", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 futures = "0.3"
+# Keyserver and WKD lookup. reqwest with rustls only: sequoia-net would do this
+# for us but hardcodes hyper-tls and a dnssec-openssl resolver with no feature
+# to opt out, which would put OpenSSL into a build that has avoided C
+# dependencies everywhere else.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "charset"] }
+sha1 = "0.10"
+z-base-32 = "0.1"
 
 anyhow = "1"
 thiserror = "2"

@@ -366,8 +366,9 @@ Roughly in the order Kleopatra users would notice them missing:
 - **Revoking a single subkey.** User IDs can be revoked; subkeys cannot.
 - **Column sorting.** The list sorts own-keys-first then by name, and the rail
   filters by scope, but there is no sort control.
-- **Keyserver and WKD lookup** — re-enable `sequoia-cert-store`'s `keyserver`
-  feature, deliberately, with rustls rather than native-tls.
+- **The keyserver and WKD UI.** `rgpg_core::keyserver` looks certificates up
+  over both, but no dialog calls it yet, and it has not been run against a live
+  server.
 - **Smartcard / YubiKey** (`sequoia-keystore-openpgp-card`).
 - **Deleting certificates**, editing expiry, adding and revoking user IDs.
 - **Column sorting.** `StandardTableView` emits `sort-ascending`/`sort-descending`;
