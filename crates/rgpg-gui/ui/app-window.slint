@@ -4,7 +4,7 @@ import {
     Btn, Check, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Tone, Variant,
 } from "widgets.slint";
 import { CertRow, CertificationRow, RecipientRow, SignatureRow, UserIdRow } from "types.slint";
-import { CertifyDialog, DecryptVerifyDialog, KeygenDialog, RevokeDialog, SignEncryptDialog } from "dialogs.slint";
+import { CertifyDialog, DecryptVerifyDialog, KeygenDialog, NotepadDialog, RevokeDialog, SignEncryptDialog } from "dialogs.slint";
 
 export { CertRow, CertificationRow, RecipientRow, SignatureRow, UserIdRow }
 
@@ -243,6 +243,17 @@ export component AppWindow inherits Window {
     in property <bool> has-revocation-cert: false;
     /// We have certified this certificate and could withdraw that.
     in property <bool> can-withdraw: false;
+    // --- Notepad ----------------------------------------------------------
+    // Reuses the Sign / Encrypt recipient and signer models rather than
+    // duplicating them; both are built from the same store contents.
+    in-out property <bool> notepad-open: false;
+    in property <string> np-output: "";
+    in property <[SignatureRow]> np-signatures;
+    in property <string> np-result: "";
+    in property <int> np-tone: 0;
+    callback open-notepad();
+    callback np-run(int, string, int, string);
+
     callback open-revoke();
     callback open-withdraw();
     callback revoke-run(int, string, string);
@@ -341,6 +352,14 @@ export component AppWindow inherits Window {
                     wide: true;
                     enabled: !root.busy;
                     clicked => { root.open-decrypt-verify(); }
+                }
+                Btn {
+                    text: "Notepad";
+                    glyph: Icons.pen-line;
+                    variant: Variant.ghost;
+                    wide: true;
+                    enabled: !root.busy;
+                    clicked => { root.open-notepad(); }
                 }
             }
         }
@@ -804,6 +823,22 @@ export component AppWindow inherits Window {
         toggle-recipient(index) => { root.se-toggle-recipient(index); }
         run(encrypt, sign, signer, password) => {
             root.se-run(encrypt, sign, signer, password);
+        }
+    }
+
+    if root.notepad-open: NotepadDialog {
+        busy: root.busy;
+        recipients: root.se-recipients;
+        signers: root.se-signers;
+        chosen-recipients: root.se-selected-count;
+        output: root.np-output;
+        signatures: root.np-signatures;
+        result: root.np-result;
+        result-tone: root.np-tone;
+        dismissed => { root.notepad-open = false; }
+        toggle-recipient(index) => { root.se-toggle-recipient(index); }
+        run(action, text, signer, password) => {
+            root.np-run(action, text, signer, password);
         }
     }
 

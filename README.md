@@ -27,7 +27,7 @@ Inside `crates/rgpg-gui/ui`:
 | --- | --- |
 | `theme.slint` | Colour, spacing and type tokens, plus the icon paths. |
 | `widgets.slint` | Buttons, fields, pills, dialogs — the app's own controls. |
-| `dialogs.slint` | New key pair, Sign / Encrypt, Decrypt / Verify. |
+| `dialogs.slint` | New key pair, Sign / Encrypt, Decrypt / Verify, Certify, Revoke, Notepad. |
 | `app-window.slint` | The shell that assembles them. |
 | `types.slint` | Structs shared with Rust. |
 
@@ -367,7 +367,6 @@ Roughly in the order Kleopatra users would notice them missing:
   self-signatures.
 - **Revoking a single user ID or subkey.** Revocation today is all-or-nothing
   on the certificate, plus withdrawing certifications.
-- **Clipboard and inline text** operations; today every operation is on a file.
 - **Column sorting.** The list sorts own-keys-first then by name, and the rail
   filters by scope, but there is no sort control.
 - **Keyserver and WKD lookup** — re-enable `sequoia-cert-store`'s `keyserver`

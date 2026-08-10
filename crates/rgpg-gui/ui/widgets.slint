@@ -1,3 +1,4 @@
+import { ScrollView } from "std-widgets.slint";
 import { Theme, Icons, Icon } from "theme.slint";
 
 export enum Tone { neutral, ok, warn, danger, accent }
@@ -450,4 +451,46 @@ export component DialogShell inherits Rectangle {
     }
 
     init => { focus.focus(); }
+}
+
+/// Multi-line text entry, for the notepad.
+///
+/// The input is positioned against the root's own size rather than nested in a
+/// ScrollView: a ScrollView sizes its viewport from its content, and a child
+/// whose width comes from that viewport closes a binding loop.
+export component TextArea inherits Rectangle {
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    in-out property <string> text <=> input.text;
+    callback edited(string);
+
+    background: Theme.surface-sunken;
+    border-radius: Theme.r-sm;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.border;
+    clip: true;
+
+    input := TextInput {
+        x: Theme.s3;
+        y: Theme.s3;
+        width: root.width - 2 * Theme.s3;
+        height: root.height - 2 * Theme.s3;
+        color: Theme.text;
+        font-size: Theme.t-md;
+        font-family: "monospace";
+        single-line: false;
+        wrap: word-wrap;
+        read-only: !root.enabled;
+        selection-background-color: Theme.accent;
+        selection-foreground-color: Theme.accent-ink;
+        edited => { root.edited(self.text); }
+    }
+
+    if input.text == "": Text {
+        x: Theme.s3;
+        y: Theme.s3;
+        text: root.placeholder;
+        color: Theme.text-faint;
+        font-size: Theme.t-md;
+    }
 }

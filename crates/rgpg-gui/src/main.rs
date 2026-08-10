@@ -273,6 +273,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     wire_decrypt_verify(&ui, &state);
     wire_certify(&ui, &state);
     wire_revoke(&ui, &state);
+    wire_notepad(&ui, &state);
 
     ui.run()?;
     Ok(())
@@ -1185,6 +1186,197 @@ fn reselect(ui: &AppWindow, state: &Shared, fingerprint: &str) {
     ui.set_detail(to_row(&summary));
     ui.set_has_selection(true);
     push_certifications(ui, &guard, &summary);
+}
+
+// -------------------------------------------------------------------- notepad
+
+fn wire_notepad(ui: &AppWindow, state: &Shared) {
+    ui.on_open_notepad({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let ui = ui_weak.unwrap();
+            // Shares the Sign / Encrypt models, so opening the notepad has to
+            // fill them the same way.
+            load_signing_targets(&ui, &state);
+            ui.set_np_output(SharedString::new());
+            ui.set_np_result(SharedString::new());
+            ui.set_np_tone(0);
+            ui.set_np_signatures(ModelRc::new(VecModel::from(Vec::<SignatureRow>::new())));
+            ui.set_notepad_open(true);
+        }
+    });
+
+    ui.on_np_run({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |action, text, signer_index, password| {
+            let ui = ui_weak.unwrap();
+            ui.set_busy(true);
+            ui.set_status("Working…".into());
+
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let (text, password) = (text.to_string(), password.to_string());
+            std::thread::spawn(move || {
+                let outcome = run_notepad(&state, action, &text, signer_index, &password);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let ui = ui_weak.unwrap();
+                    ui.set_busy(false);
+                    match outcome {
+                        Ok((output, summary, tone, signatures)) => {
+                            let rows: Vec<SignatureRow> = signatures
+                                .iter()
+                                .map(|s| SignatureRow {
+                                    good: s.good,
+                                    signer: s.signer.clone().into(),
+                                    detail: s.detail.clone().into(),
+                                })
+                                .collect();
+                            ui.set_np_signatures(ModelRc::new(VecModel::from(rows)));
+                            ui.set_np_output(output.into());
+                            ui.set_np_result(summary.clone().into());
+                            ui.set_np_tone(tone);
+                            ui.set_status(summary.into());
+                        }
+                        Err(message) => {
+                            ui.set_np_result(message.clone().into());
+                            ui.set_np_tone(3);
+                            ui.set_status(message.into());
+                        }
+                    }
+                });
+            });
+        }
+    });
+}
+
+/// The blocking half of the notepad. Returns the output text, a summary line,
+/// a tone for the banner, and any signatures found.
+fn run_notepad(
+    state: &Shared,
+    action: i32,
+    text: &str,
+    signer_index: i32,
+    password: &str,
+) -> Result<(String, String, i32, Vec<rgpg_core::ops::SignatureReport>), String> {
+    let guard = state.lock().unwrap();
+    let password = Some(password).filter(|p| !p.is_empty());
+
+    // Return types inferred: naming them would mean importing a Sequoia
+    // type into the GUI, which this crate deliberately avoids.
+    let signer = |guard: &State| {
+        let (fingerprint, _) = guard
+            .se_signers
+            .get(signer_index.max(0) as usize)
+            .ok_or_else(|| "Choose a key to sign with".to_string())?;
+        guard
+            .store
+            .secret_cert(fingerprint)
+            .or_else(|_| guard.store.lookup(fingerprint))
+            .map_err(|e| format!("Signing key unavailable: {e}"))
+    };
+
+    let recipients = |guard: &State| {
+        let mut out = Vec::new();
+        for entry in guard.se_recipients.iter().filter(|r| r.selected) {
+            out.push(
+                guard
+                    .store
+                    .lookup(&entry.fingerprint)
+                    .map_err(|e| format!("Recipient {} unavailable: {e}", entry.label))?,
+            );
+        }
+        if out.is_empty() {
+            return Err("Select at least one recipient".to_string());
+        }
+        Ok::<_, String>(out)
+    };
+
+    let mut output = Vec::new();
+    match action {
+        // Sign, as a detached signature over the text.
+        0 => {
+            let cert = signer(&guard)?;
+            ops::sign_detached(&cert, password, text.as_bytes(), &mut output)
+                .map_err(|e| format!("Signing failed: {e}"))?;
+            Ok((string_of(output), "Signed".to_string(), 1, Vec::new()))
+        }
+        1 | 2 => {
+            let certs = recipients(&guard)?;
+            let signing = if action == 2 { Some(signer(&guard)?) } else { None };
+            ops::encrypt(
+                &certs,
+                signing.as_ref().map(|cert| (cert, password)),
+                text.as_bytes(),
+                &mut output,
+            )
+            .map_err(|e| format!("Encryption failed: {e}"))?;
+            let what = if action == 2 { "Signed and encrypted" } else { "Encrypted" };
+            Ok((string_of(output), what.to_string(), 1, Vec::new()))
+        }
+        // Decrypt, or verify if what was pasted is a bare signature.
+        _ => {
+            if ops::classify(text.as_bytes()) == InputKind::DetachedSignature {
+                return Err(
+                    "That is a detached signature; it needs the file it signs, so use \
+                     Decrypt / Verify instead."
+                        .to_string(),
+                );
+            }
+            let result = ops::decrypt(&guard.store, text.as_bytes(), password, &mut output)
+                .map_err(|e| format!("Decryption failed: {e}"))?;
+
+            let (summary, tone) = if result.signatures.is_empty() {
+                ("Decrypted. The message was not signed.".to_string(), 2)
+            } else if result.all_good() {
+                ("Decrypted, signature verified".to_string(), 1)
+            } else {
+                ("Decrypted, but a signature is NOT valid".to_string(), 3)
+            };
+            Ok((string_of(output), summary, tone, result.signatures))
+        }
+    }
+}
+
+/// Armored output is text; anything else is shown as a note rather than as
+/// mojibake.
+fn string_of(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes)
+        .unwrap_or_else(|e| format!("<{} bytes of binary output>", e.as_bytes().len()))
+}
+
+/// Fill the shared recipient and signer models from the store.
+fn load_signing_targets(ui: &AppWindow, state: &Shared) {
+    let mut guard = state.lock().unwrap();
+    let recipients: Vec<Recipient> = guard
+        .all
+        .iter()
+        .filter(|c| c.can_encrypt)
+        .map(|c| {
+            let (name, email) = split_user_id(&c.primary_user_id);
+            Recipient {
+                selected: false,
+                initials: initials(&name, &email, &c.key_id),
+                tint: tint_index(&c.fingerprint),
+                label: if name.is_empty() { c.primary_user_id.clone() } else { name },
+                sublabel: if email.is_empty() { c.key_id.clone() } else { email },
+                fingerprint: c.fingerprint.clone(),
+            }
+        })
+        .collect();
+    let signers: Vec<(String, String)> = guard
+        .all
+        .iter()
+        .filter(|c| c.can_sign && (c.has_secret || c.agent_backed))
+        .map(|c| {
+            let label = match &c.card_serial {
+                Some(_) => format!("{} (smartcard)", c.primary_user_id),
+                None => c.primary_user_id.clone(),
+            };
+            (c.fingerprint.clone(), label)
+        })
+        .collect();
+    guard.se_recipients = recipients;
+    guard.se_signers = signers;
+    push_sign_encrypt(ui, &guard);
 }
 
 // ----------------------------------------------------------------- revocation

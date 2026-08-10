@@ -1,6 +1,6 @@
 import { ListView } from "std-widgets.slint";
 import { Theme, Icons, Icon } from "theme.slint";
-import { Btn, Check, DialogShell, Divider, Field, Monogram, Pill, Select, Tone, Variant } from "widgets.slint";
+import { Btn, Check, DialogShell, Divider, Field, Monogram, Pill, Select, TextArea, Tone, Variant } from "widgets.slint";
 import { RecipientRow, SignatureRow, UserIdRow } from "types.slint";
 
 // A file slot: label, the chosen path (or a hint), and a Choose button.
@@ -752,6 +752,214 @@ export component RevokeDialog inherits DialogShell {
                 variant: Variant.danger;
                 enabled: !root.busy;
                 clicked => { root.run(root.reason, root.message, root.password); }
+            }
+        }
+    }
+}
+
+export component NotepadDialog inherits DialogShell {
+    in property <[RecipientRow]> recipients;
+    in property <[string]> signers;
+    in property <int> chosen-recipients;
+    in property <string> output;
+    in property <[SignatureRow]> signatures;
+    in property <string> result;
+    in property <int> result-tone;
+    in property <bool> busy;
+    callback toggle-recipient(int);
+    /// action: 0 sign, 1 encrypt, 2 sign and encrypt, 3 decrypt or verify
+    callback run(int, string, int, string);
+
+    property <string> password;
+    property <int> signer-index: 0;
+
+    title: "Notepad";
+    subtitle: "Work on text directly instead of files. Paste a message to "
+        + "decrypt or verify it, or type one to sign or encrypt.";
+    card-width: 820px;
+
+    VerticalLayout {
+        spacing: Theme.s3;
+
+        HorizontalLayout {
+            spacing: Theme.s3;
+
+            VerticalLayout {
+                spacing: 6px;
+                horizontal-stretch: 1;
+                Text {
+                    text: "Input";
+                    color: Theme.text-dim;
+                    font-size: Theme.t-sm;
+                }
+                editor := TextArea {
+                    height: 200px;
+                    placeholder: "Type, or paste an OpenPGP message…";
+                    enabled: !root.busy;
+                }
+            }
+
+            VerticalLayout {
+                spacing: 6px;
+                width: 260px;
+                HorizontalLayout {
+                    Text {
+                        text: "Recipients";
+                        color: Theme.text-dim;
+                        font-size: Theme.t-sm;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: root.chosen-recipients == 0
+                            ? "none" : "\{root.chosen-recipients}";
+                        color: Theme.text-faint;
+                        font-size: Theme.t-sm;
+                    }
+                }
+                Rectangle {
+                    height: 200px;
+                    background: Theme.surface-sunken;
+                    border-radius: Theme.r-sm;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    clip: true;
+                    ListView {
+                        for entry[index] in root.recipients: Rectangle {
+                            height: 34px;
+                            background: pick.has-hover ? Theme.hover : transparent;
+                            HorizontalLayout {
+                                padding-left: Theme.s2;
+                                padding-right: Theme.s2;
+                                spacing: Theme.s2;
+                                Rectangle {
+                                    width: 15px;
+                                    height: 15px;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 4px;
+                                    background: entry.selected ? Theme.accent : Theme.surface;
+                                    border-width: 1px;
+                                    border-color: entry.selected ? Theme.accent : Theme.border-strong;
+                                    if entry.selected: Icon {
+                                        glyph: Icons.check;
+                                        tint: Theme.accent-ink;
+                                        width: 11px;
+                                        height: 11px;
+                                    }
+                                }
+                                Text {
+                                    text: entry.label;
+                                    color: Theme.text;
+                                    font-size: Theme.t-sm;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                            pick := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.toggle-recipient(index); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.s2;
+            if root.signers.length > 0: Select {
+                model: root.signers;
+                enabled: !root.busy;
+                current: root.signer-index;
+                changed(index) => { root.signer-index = index; }
+            }
+            Field {
+                placeholder: "Passphrase (if any)";
+                secret: true;
+                enabled: !root.busy;
+                edited(text) => { root.password = text; }
+            }
+        }
+
+        if root.result != "": Rectangle {
+            background: root.result-tone == 1 ? Theme.ok-soft
+                : root.result-tone == 2 ? Theme.warn-soft : Theme.danger-soft;
+            border-radius: Theme.r-md;
+            height: banner.preferred-height;
+            banner := VerticalLayout {
+                padding: Theme.s3;
+                spacing: Theme.s1;
+                Text {
+                    text: root.result;
+                    color: root.result-tone == 1 ? Theme.ok
+                        : root.result-tone == 2 ? Theme.warn : Theme.danger;
+                    font-size: Theme.t-md;
+                    font-weight: Theme.w-medium;
+                    wrap: word-wrap;
+                }
+                for signature in root.signatures: Text {
+                    text: (signature.good ? "good signature — " : "BAD — ")
+                        + (signature.good ? signature.signer : signature.detail);
+                    color: Theme.text;
+                    font-size: Theme.t-sm;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if root.output != "": VerticalLayout {
+            spacing: 6px;
+            Text {
+                text: "Output";
+                color: Theme.text-dim;
+                font-size: Theme.t-sm;
+            }
+            // Kept separate from the input rather than replacing it: pasting
+            // ciphertext and having it overwritten by the plaintext loses the
+            // thing you might still need.
+            TextArea {
+                height: 150px;
+                text: root.output;
+                enabled: false;
+            }
+        }
+
+        Divider { }
+
+        HorizontalLayout {
+            spacing: Theme.s2;
+            Btn {
+                text: "Close";
+                variant: Variant.ghost;
+                enabled: !root.busy;
+                clicked => { root.dismissed(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Btn {
+                text: "Decrypt / Verify";
+                glyph: Icons.unlock;
+                enabled: !root.busy && editor.text != "";
+                clicked => { root.run(3, editor.text, root.signer-index, root.password); }
+            }
+            Btn {
+                text: "Sign";
+                glyph: Icons.pen-line;
+                enabled: !root.busy && editor.text != "" && root.signers.length > 0;
+                clicked => { root.run(0, editor.text, root.signer-index, root.password); }
+            }
+            Btn {
+                text: "Encrypt";
+                glyph: Icons.lock;
+                enabled: !root.busy && editor.text != "" && root.chosen-recipients > 0;
+                clicked => { root.run(1, editor.text, root.signer-index, root.password); }
+            }
+            Btn {
+                text: "Sign & Encrypt";
+                glyph: Icons.lock;
+                variant: Variant.primary;
+                enabled: !root.busy && editor.text != "" && root.chosen-recipients > 0
+                    && root.signers.length > 0;
+                clicked => { root.run(2, editor.text, root.signer-index, root.password); }
             }
         }
     }
