@@ -74,38 +74,40 @@ export global Theme {
     out property <duration> fast: 120ms;
 }
 
-// Stroke icons on a 24x24 grid, drawn as paths so the app ships no image
-// assets and the glyphs cannot go missing with a font.
+// Lucide, ISC licensed — see icons/LICENSE. Every glyph is 24x24 on a 2px
+// round-cap stroke, and `Icon` recolours it through the alpha channel, so the
+// set follows the theme without a second copy per colour.
+//
+// The names here are the app's, not Lucide's: `arrow-in`/`arrow-out` because
+// `import` and `export` are Slint keywords, and `key`/`file`/`unlock` because
+// the call sites should not care which Lucide variant was chosen.
 export global Icons {
-    out property <string> plus: "M12 5 L12 19 M5 12 L19 12";
-    // Not named `import`/`export`: both are Slint keywords.
-    out property <string> arrow-in: "M12 3 L12 15 M7 10 L12 15 L17 10 M4 20 L20 20";
-    out property <string> arrow-out: "M12 15 L12 3 M7 8 L12 3 L17 8 M4 20 L20 20";
-    out property <string> refresh: "M20 12 A8 8 0 1 1 12 4 M12 4 L16 1 M12 4 L16 7";
-    out property <string> lock: "M6 11 L18 11 L18 20 L6 20 Z M9 11 L9 8 A3 3 0 0 1 15 8 L15 11";
-    out property <string> pen: "M4 20 L4 16 L16 4 L20 8 L8 20 Z M14 6 L18 10";
-    out property <string> unlock: "M6 11 L18 11 L18 20 L6 20 Z M9 11 L9 8 A3 3 0 0 1 15 8";
-    out property <string> search: "M11 4 A7 7 0 1 0 11.01 4 M16.2 16.2 L21 21";
-    out property <string> check: "M5 12.5 L9.5 17 L19 7";
-    out property <string> cross: "M6 6 L18 18 M18 6 L6 18";
-    out property <string> key: "M9 15 A5 5 0 1 0 9.01 15 M12.5 11.5 L21 3 M18 6 L20 8 M15.5 8.5 L17.5 10.5";
-    out property <string> file: "M13 3 L6 3 L6 21 L18 21 L18 8 Z M13 3 L13 8 L18 8";
-    out property <string> shield: "M12 3 L20 6 L20 12 C20 17 16 20 12 21 C8 20 4 17 4 12 L4 6 Z";
-    out property <string> chevron-down: "M6 9.5 L12 15.5 L18 9.5";
-    out property <string> dots: "M5 12 L5.01 12 M12 12 L12.01 12 M19 12 L19.01 12";
+    out property <image> plus: @image-url("icons/plus.svg");
+    out property <image> arrow-in: @image-url("icons/download.svg");
+    out property <image> arrow-out: @image-url("icons/upload.svg");
+    out property <image> refresh: @image-url("icons/refresh-cw.svg");
+    out property <image> lock: @image-url("icons/lock.svg");
+    out property <image> unlock: @image-url("icons/lock-open.svg");
+    out property <image> search: @image-url("icons/search.svg");
+    out property <image> check: @image-url("icons/check.svg");
+    out property <image> cross: @image-url("icons/x.svg");
+    out property <image> key: @image-url("icons/key-round.svg");
+    out property <image> file: @image-url("icons/file-text.svg");
+    out property <image> shield: @image-url("icons/shield.svg");
+    out property <image> chevron-down: @image-url("icons/chevron-down.svg");
+    // A 2px stroke scales to nearly 4px at the 44px empty-state size, so that
+    // one use gets a thinned copy.
+    out property <image> shield-large: @image-url("icons/shield-large.svg");
 }
 
-export component Icon inherits Path {
-    in property <string> glyph;
+export component Icon inherits Image {
+    in property <image> glyph;
     in property <brush> tint: Theme.text;
-    in property <length> weight: 1.7px;
 
-    commands: root.glyph;
-    viewbox-width: 24;
-    viewbox-height: 24;
+    source: root.glyph;
+    // colorize treats the SVG as an alpha mask and paints it in `tint`.
+    colorize: root.tint;
+    image-fit: contain;
     width: 16px;
     height: 16px;
-    fill: transparent;
-    stroke: root.tint;
-    stroke-width: root.weight;
 }

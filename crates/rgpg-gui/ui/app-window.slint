@@ -10,7 +10,7 @@ export { CertRow, RecipientRow, SignatureRow }
 
 component RailItem inherits Rectangle {
     in property <string> text;
-    in property <string> glyph;
+    in property <image> glyph;
     in property <int> count;
     in property <bool> active;
     callback clicked();
@@ -237,7 +237,6 @@ export component AppWindow inherits Window {
                         tint: Theme.accent;
                         width: 20px;
                         height: 20px;
-                        weight: 1.8px;
                         y: (parent.height - self.height) / 2;
                     }
 
@@ -375,11 +374,10 @@ export component AppWindow inherits Window {
                         spacing: Theme.s3;
 
                         Icon {
-                            glyph: Icons.shield;
+                            glyph: Icons.shield-large;
                             tint: Theme.text-faint;
                             width: 44px;
                             height: 44px;
-                            weight: 1.2px;
                             x: (parent.width - self.width) / 2;
                         }
                         Text {

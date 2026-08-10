@@ -6,7 +6,7 @@ export enum Tone { neutral, ok, warn, danger, accent }
 export component Pill inherits Rectangle {
     in property <string> text;
     in property <Tone> tone: Tone.neutral;
-    in property <string> glyph: "";
+    in property <image> glyph;
 
     property <brush> ink:
         root.tone == Tone.ok ? Theme.ok
@@ -27,17 +27,16 @@ export component Pill inherits Rectangle {
     horizontal-stretch: 0;
 
     HorizontalLayout {
-        padding-left: root.glyph == "" ? 8px : 6px;
+        padding-left: root.glyph.width == 0 ? 8px : 6px;
         padding-right: 8px;
         spacing: 4px;
         alignment: center;
 
-        if root.glyph != "": Icon {
+        if root.glyph.width > 0: Icon {
             glyph: root.glyph;
             tint: root.ink;
             width: 12px;
             height: 12px;
-            weight: 2.2px;
             y: (parent.height - self.height) / 2;
         }
 
@@ -55,7 +54,7 @@ export enum Variant { primary, secondary, ghost, danger }
 
 export component Btn inherits Rectangle {
     in property <string> text;
-    in property <string> glyph: "";
+    in property <image> glyph;
     in property <Variant> variant: Variant.secondary;
     in property <bool> enabled: true;
     callback clicked();
@@ -89,10 +88,9 @@ export component Btn inherits Rectangle {
         spacing: 6px;
         alignment: center;
 
-        if root.glyph != "": Icon {
+        if root.glyph.width > 0: Icon {
             glyph: root.glyph;
             tint: root.ink;
-            weight: 1.9px;
             y: (parent.height - self.height) / 2;
         }
 
@@ -119,7 +117,7 @@ export component Field inherits Rectangle {
     in property <string> placeholder;
     in property <bool> secret: false;
     in property <bool> enabled: true;
-    in property <string> glyph: "";
+    in property <image> glyph;
     in-out property <string> text <=> input.text;
     callback edited(string);
     callback accepted();
@@ -138,7 +136,7 @@ export component Field inherits Rectangle {
         padding-right: Theme.s3;
         spacing: Theme.s2;
 
-        if root.glyph != "": Icon {
+        if root.glyph.width > 0: Icon {
             glyph: root.glyph;
             tint: Theme.text-faint;
             y: (parent.height - self.height) / 2;
@@ -160,7 +158,7 @@ export component Field inherits Rectangle {
     }
 
     if input.text == "": Text {
-        x: root.glyph == "" ? Theme.s3 : Theme.s3 + 16px + Theme.s2;
+        x: root.glyph.width == 0 ? Theme.s3 : Theme.s3 + 16px + Theme.s2;
         y: 0;
         height: root.height;
         text: root.placeholder;
@@ -198,7 +196,6 @@ export component Check inherits Rectangle {
                 tint: Theme.accent-ink;
                 width: 12px;
                 height: 12px;
-                weight: 3px;
             }
         }
 

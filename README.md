@@ -43,8 +43,16 @@ Everything else is drawn by the design system in `theme.slint` and
 monogram avatars and the modal shell. Only `ListView` comes from std-widgets,
 for its virtualised scrolling.
 
-Icons are `Path` elements on a 24×24 grid rather than image assets or an icon
-font, so they take the theme's colour directly and cannot go missing at runtime.
+Icons are [Lucide](https://lucide.dev/) SVGs in `ui/icons`, vendored rather than
+fetched, and recoloured through `Image`'s `colorize` so one file serves every
+tone in both light and dark. They are 24×24 on a 2px round-cap stroke; the one
+place an icon is drawn at 44px uses a thinned copy, because SVG scales the
+stroke along with the shape. Lucide is ISC licensed and its notice is kept at
+`ui/icons/LICENSE`.
+
+`Icon` decides whether a button or pill has a glyph by asking the image for its
+intrinsic width — a loaded SVG reports 24, an unset one reports 0 — so text-only
+controls need no extra flag.
 
 Two consequences worth knowing:
 

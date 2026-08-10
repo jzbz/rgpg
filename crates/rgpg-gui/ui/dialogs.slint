@@ -250,7 +250,6 @@ export component SignEncryptDialog inherits DialogShell {
                                     tint: Theme.accent-ink;
                                     width: 12px;
                                     height: 12px;
-                                    weight: 3px;
                                 }
                             }
 
@@ -415,7 +414,6 @@ export component DecryptVerifyDialog inherits DialogShell {
                         tint: root.result-tone == 1 ? Theme.ok
                             : root.result-tone == 2 ? Theme.warn
                             : Theme.danger;
-                        weight: 2.4px;
                         y: (parent.height - self.height) / 2;
                     }
                     Text {
