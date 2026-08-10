@@ -161,14 +161,18 @@ export component Field inherits Rectangle {
         }
     }
 
+    // Bounded and elided: a placeholder longer than its box would otherwise
+    // draw straight out of the field and over whatever sits beside it.
     if input.text == "": Text {
         x: root.glyph.width == 0 ? Theme.s3 : Theme.s3 + 16px + Theme.s2;
         y: 0;
+        width: root.width - self.x - Theme.s3;
         height: root.height;
         text: root.placeholder;
         color: Theme.text-faint;
         font-size: Theme.t-md;
         vertical-alignment: center;
+        overflow: elide;
     }
 }
 

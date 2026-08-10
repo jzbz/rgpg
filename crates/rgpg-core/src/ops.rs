@@ -9,7 +9,7 @@ use sequoia_openpgp::packet::{PKESK, SKESK};
 use sequoia_openpgp::parse::Parse;
 use sequoia_openpgp::parse::stream::{
     DecryptionHelper, DecryptorBuilder, DetachedVerifierBuilder, MessageLayer, MessageStructure,
-    VerificationHelper,
+    VerificationHelper, VerifierBuilder,
 };
 use sequoia_openpgp::serialize::stream::{
     Armorer, Encryptor, LiteralWriter, Message, Recipient, Signer,
@@ -150,6 +150,45 @@ pub fn sign_detached(
     message.write_all(data)?;
     message.finalize()?;
     Ok(())
+}
+
+/// Sign `data` so the text stays readable, with the signature appended.
+///
+/// This is the cleartext signature framework — what belongs in an e-mail or a
+/// forum post, where a detached signature would be useless because there is
+/// nowhere to put the second file.
+pub fn sign_cleartext(
+    signer: &Cert,
+    password: Option<&str>,
+    data: &[u8],
+    sink: impl Write + Send + Sync,
+) -> Result<()> {
+    let keypair = signing_keypair(signer, password)?;
+    let message = Message::new(sink);
+    let mut message = Signer::new(message, keypair)?.cleartext().build()?;
+    message.write_all(data)?;
+    message.finalize()?;
+    Ok(())
+}
+
+/// Verify a message that carries its own text: cleartext-signed, or signed and
+/// wrapped. Returns the text alongside the verdict.
+pub fn verify_inline(store: &Store, signed: &[u8]) -> Result<(Vec<u8>, VerifyResult)> {
+    let policy = policy();
+    let helper = Helper::new(store, None);
+
+    let mut verifier = VerifierBuilder::from_bytes(signed)?.with_policy(&policy, None, helper)?;
+    let mut text = Vec::new();
+    std::io::copy(&mut verifier, &mut text).map_err(|e| Error::io("verifying message", e))?;
+
+    let helper = verifier.into_helper();
+    Ok((
+        text,
+        VerifyResult {
+            signatures: helper.signatures,
+            decrypted_with: None,
+        },
+    ))
 }
 
 /// Verify a detached signature over `data`.
@@ -407,12 +446,17 @@ pub fn classify(data: &[u8]) -> InputKind {
     // than decoding: the file may be binary, and a UTF-8 error here would
     // wrongly rule out an armored file whose tail is not valid UTF-8.
     let head = &data[..data.len().min(1024)];
+    // Cleartext first: a cleartext-signed message contains *both* markers —
+    // its own header and the signature block that follows the text — so
+    // testing for the signature first misreads it as a detached signature and
+    // sends the reader off looking for a file that does not exist.
+    if contains(head, b"-----BEGIN PGP SIGNED MESSAGE-----") {
+        return InputKind::Message;
+    }
     if contains(head, b"-----BEGIN PGP SIGNATURE-----") {
         return InputKind::DetachedSignature;
     }
-    if contains(head, b"-----BEGIN PGP MESSAGE-----")
-        || contains(head, b"-----BEGIN PGP SIGNED MESSAGE-----")
-    {
+    if contains(head, b"-----BEGIN PGP MESSAGE-----") {
         return InputKind::Message;
     }
 
@@ -576,6 +620,12 @@ mod tests {
         sign_detached(&alice, None, b"hello", &mut signature).unwrap();
         assert_eq!(classify(&signature), InputKind::DetachedSignature);
 
+        // A cleartext signature carries both markers; it is a message, not a
+        // detached signature, whatever order they appear in.
+        let mut cleartext = Vec::new();
+        sign_cleartext(&alice, None, b"hello", &mut cleartext).unwrap();
+        assert_eq!(classify(&cleartext), InputKind::Message);
+
         assert_eq!(classify(b"just a text file\n"), InputKind::NotOpenPgp);
         assert_eq!(classify(b""), InputKind::NotOpenPgp);
     }
@@ -694,6 +744,31 @@ mod tests {
     fn refuses_a_message_addressed_to_nobody() {
         assert!(encrypt(&[], &[], None, b"x", &mut Vec::new()).is_err());
         assert!(encrypt(&[], &[String::new()], None, b"x", &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn cleartext_signature_keeps_the_text_readable() {
+        let (_dir, store) = scratch_store();
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+
+        let mut signed = Vec::new();
+        sign_cleartext(&alice, None, b"the meeting is at noon", &mut signed).unwrap();
+
+        // The point of cleartext: a reader who has no OpenPGP tools can still
+        // read it.
+        assert!(signed.starts_with(b"-----BEGIN PGP SIGNED MESSAGE-----"));
+        assert!(
+            String::from_utf8_lossy(&signed).contains("the meeting is at noon"),
+            "the text should stay legible"
+        );
+
+        let (text, result) = verify_inline(&store, &signed).unwrap();
+        assert_eq!(text, b"the meeting is at noon");
+        assert!(result.all_good(), "signatures: {:?}", result.signatures);
+        assert_eq!(result.signatures[0].signer, "Alice <alice@example.org>");
     }
 
     #[test]

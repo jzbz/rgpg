@@ -803,6 +803,9 @@ export component NotepadDialog inherits DialogShell {
     callback toggle-recipient(int);
     /// action: 0 sign, 1 encrypt, 2 sign and encrypt, 3 decrypt or verify
     callback run(int, string, int, string, string);
+    callback copy-output();
+    /// Set briefly after a copy, so the button can confirm itself.
+    in property <bool> copied: false;
 
     property <string> password;
     /// Symmetric passphrase. On the way out it encrypts for anyone holding it;
@@ -912,13 +915,13 @@ export component NotepadDialog inherits DialogShell {
                 changed(index) => { root.signer-index = index; }
             }
             Field {
-                placeholder: "Passphrase (if any)";
+                placeholder: "Key passphrase";
                 secret: true;
                 enabled: !root.busy;
                 edited(text) => { root.password = text; }
             }
             Field {
-                placeholder: "Or a password to encrypt with";
+                placeholder: "Or a password";
                 secret: true;
                 enabled: !root.busy;
                 edited(text) => { root.secret = text; }
@@ -953,10 +956,23 @@ export component NotepadDialog inherits DialogShell {
 
         if root.output != "": VerticalLayout {
             spacing: 6px;
-            Text {
-                text: "Output";
-                color: Theme.text-dim;
-                font-size: Theme.t-sm;
+            HorizontalLayout {
+                Text {
+                    text: "Output";
+                    color: Theme.text-dim;
+                    font-size: Theme.t-sm;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                // A button rather than click-to-copy: clicking text should
+                // place a cursor or start a selection, not fire a side effect
+                // with no affordance and no confirmation.
+                Btn {
+                    text: root.copied ? "Copied" : "Copy";
+                    glyph: root.copied ? Icons.check : Icons.file;
+                    variant: Variant.ghost;
+                    clicked => { root.copy-output(); }
+                }
             }
             // Kept separate from the input rather than replacing it: pasting
             // ciphertext and having it overwritten by the plaintext loses the

@@ -37,5 +37,10 @@ slint = { version = "1.17", default-features = false, features = [
 # Linux. macOS uses the AppKit bindings.
 rfd = "0.17"
 
+# Slint exposes no clipboard API, only a platform trait for backend authors.
+# wayland-data-control is the wlr protocol, which GNOME does not implement, so
+# this falls back to X11 through XWayland there.
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+
 [build-dependencies]
 slint-build = "1.17"

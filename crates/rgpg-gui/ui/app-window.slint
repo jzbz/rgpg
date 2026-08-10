@@ -280,6 +280,8 @@ export component AppWindow inherits Window {
 
     callback open-notepad();
     callback np-run(int, string, int, string, string);
+    callback np-copy();
+    in property <bool> np-copied: false;
 
     callback open-revoke();
     callback open-withdraw();
@@ -929,7 +931,9 @@ export component AppWindow inherits Window {
         signatures: root.np-signatures;
         result: root.np-result;
         result-tone: root.np-tone;
+        copied: root.np-copied;
         dismissed => { root.notepad-open = false; }
+        copy-output => { root.np-copy(); }
         toggle-recipient(index) => { root.se-toggle-recipient(index); }
         run(action, text, signer, password, secret) => {
             root.np-run(action, text, signer, password, secret);

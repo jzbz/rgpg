@@ -1604,6 +1604,31 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
         }
     });
 
+    ui.on_np_copy({
+        let ui_weak = ui.as_weak();
+        move || {
+            let ui = ui_weak.unwrap();
+            let text = ui.get_np_output().to_string();
+            match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+                Ok(()) => {
+                    ui.set_np_copied(true);
+                    ui.set_status("Copied to the clipboard".into());
+                    // Let the button say so, then go back to offering the action.
+                    let ui_weak = ui.as_weak();
+                    let _ = slint::Timer::single_shot(
+                        std::time::Duration::from_millis(1500),
+                        move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_np_copied(false);
+                            }
+                        },
+                    );
+                }
+                Err(e) => ui.set_status(format!("Could not copy: {e}").into()),
+            }
+        }
+    });
+
     ui.on_np_run({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |action, text, signer_index, password, secret| {
@@ -1695,12 +1720,18 @@ fn run_notepad(
 
     let mut output = Vec::new();
     match action {
-        // Sign, as a detached signature over the text.
+        // Cleartext, not detached: a detached signature is useless in a text
+        // box, since there is nowhere to put the file it covers.
         0 => {
             let cert = signer(&guard)?;
-            ops::sign_detached(&cert, password, text.as_bytes(), &mut output)
+            ops::sign_cleartext(&cert, password, text.as_bytes(), &mut output)
                 .map_err(|e| format!("Signing failed: {e}"))?;
-            Ok((string_of(output), "Signed".to_string(), 1, Vec::new()))
+            Ok((
+                string_of(output),
+                "Signed. The text stays readable to anyone.".to_string(),
+                1,
+                Vec::new(),
+            ))
         }
         1 | 2 => {
             let certs = recipients(&guard)?;
@@ -1729,6 +1760,19 @@ fn run_notepad(
                      Decrypt / Verify instead."
                         .to_string(),
                 );
+            }
+
+            // Cleartext-signed text carries its own content, so it is verified
+            // rather than decrypted.
+            if text.contains("-----BEGIN PGP SIGNED MESSAGE-----") {
+                let (verified, result) = ops::verify_inline(&guard.store, text.as_bytes())
+                    .map_err(|e| format!("Verification failed: {e}"))?;
+                let (summary, tone) = if result.all_good() {
+                    ("Signature verified".to_string(), 1)
+                } else {
+                    ("Signature is NOT valid".to_string(), 3)
+                };
+                return Ok((string_of(verified), summary, tone, result.signatures));
             }
             let result = ops::decrypt(&guard.store, text.as_bytes(), password, &mut output)
                 .map_err(|e| format!("Decryption failed: {e}"))?;
