@@ -123,7 +123,13 @@ component CertListRow inherits Rectangle {
                     glyph: Icons.certify;
                 }
 
-                if root.cert.has-secret: Pill {
+                if root.cert.card-serial != "": Pill {
+                    text: "smartcard";
+                    tone: Tone.accent;
+                    glyph: Icons.key;
+                }
+
+                if root.cert.has-secret && root.cert.card-serial == "": Pill {
                     text: "secret key";
                     tone: Tone.accent;
                     glyph: Icons.key;
@@ -541,7 +547,13 @@ export component AppWindow inherits Window {
                                     : root.detail.validity == "expired" ? Tone.warn
                                     : Tone.danger;
                             }
-                            if root.detail.has-secret: Pill {
+                            if root.detail.card-serial != "": Pill {
+                                text: "smartcard " + root.detail.card-serial;
+                                tone: Tone.accent;
+                                glyph: Icons.key;
+                            }
+
+                            if root.detail.has-secret && root.detail.card-serial == "": Pill {
                                 text: "secret key";
                                 tone: Tone.accent;
                                 glyph: Icons.key;

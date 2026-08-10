@@ -26,6 +26,8 @@ export struct CertRow {
     is-trust-root: bool,
     // Why the certificate was revoked; empty when it has not been.
     revocation: string,
+    // Smartcard serial when gpg-agent signs for this key from a card.
+    card-serial: string,
 }
 
 // One certification already on a certificate, flattened for display.

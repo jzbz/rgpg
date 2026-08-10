@@ -519,11 +519,19 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
                 })
                 .collect();
 
+            // A card key has no local secret: the agent holds it. Label those
+            // so it is obvious which choice will ask for a PIN.
             let signers: Vec<(String, String)> = guard
                 .all
                 .iter()
-                .filter(|c| c.has_secret && c.can_sign)
-                .map(|c| (c.fingerprint.clone(), c.primary_user_id.clone()))
+                .filter(|c| c.can_sign && (c.has_secret || c.agent_backed))
+                .map(|c| {
+                    let label = match &c.card_serial {
+                        Some(_) => format!("{} (smartcard)", c.primary_user_id),
+                        None => c.primary_user_id.clone(),
+                    };
+                    (c.fingerprint.clone(), label)
+                })
                 .collect();
 
             guard.se_recipients = recipients;
@@ -620,10 +628,13 @@ fn run_sign_encrypt(
             .se_signers
             .get(signer_index.max(0) as usize)
             .ok_or_else(|| "Choose a key to sign with".to_string())?;
+        // Local secret if we have it; otherwise the public certificate, which
+        // is all the agent needs — it finds the secret by keygrip.
         Some(
             guard
                 .store
                 .secret_cert(fingerprint)
+                .or_else(|_| guard.store.lookup(fingerprint))
                 .map_err(|e| format!("Signing key unavailable: {e}"))?,
         )
     } else {
@@ -1369,6 +1380,8 @@ fn reload(ui: &AppWindow, state: &Shared) {
         .collect();
     let explicit_roots = guard.store.trust_roots().unwrap_or_default();
     let authenticated = wot::authenticate_all(&certs, &roots);
+    // One round trip to gpg-agent for the whole store, not one per row.
+    let agent_keys = rgpg_core::agent::annotate(&certs);
 
     // The secret half lives outside cert-d, so ask the store which ones it has.
     let State { store, all, .. } = &mut *guard;
@@ -1377,6 +1390,10 @@ fn reload(ui: &AppWindow, state: &Shared) {
         summary.has_secret = store.has_secret(&summary.fingerprint);
         summary.is_trust_root = explicit_roots.contains(&key);
         summary.authentication = authenticated.get(&key).copied().unwrap_or_default();
+        if let Some(agent_key) = agent_keys.get(&summary.fingerprint) {
+            summary.agent_backed = true;
+            summary.card_serial = agent_key.card_serial.clone();
+        }
     }
 
     // A stable order beats cert-d's, which is by fingerprint. Own keys first:
@@ -1455,6 +1472,7 @@ fn to_row(summary: &CertSummary) -> CertRow {
         authentication: summary.authentication.as_str().into(),
         is_trust_root: summary.is_trust_root,
         revocation: summary.revocation.clone().unwrap_or_default().into(),
+        card_serial: summary.card_serial.clone().unwrap_or_default().into(),
     }
 }
 

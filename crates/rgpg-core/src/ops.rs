@@ -154,15 +154,22 @@ pub fn verify_detached(store: &Store, signature: &[u8], data: &[u8]) -> Result<V
     })
 }
 
-/// Unlock a signing-capable secret key, decrypting it with `password` if it is
-/// protected.
-fn signing_keypair(cert: &Cert, password: Option<&str>) -> Result<sequoia_openpgp::crypto::KeyPair> {
+/// Unlock a signing-capable secret key.
+///
+/// Local key material is used when the certificate carries it. Otherwise the
+/// user's gpg-agent is asked, which is how a smartcard signs: the secret never
+/// leaves the card, and the PIN prompt is the agent's own pinentry rather than
+/// anything rgpg draws.
+fn signing_keypair(
+    cert: &Cert,
+    password: Option<&str>,
+) -> Result<Box<dyn sequoia_openpgp::crypto::Signer + Send + Sync>> {
     let policy = policy();
     let valid = cert
         .with_policy(&policy, None)
         .map_err(|_| Error::NoSecretKey(cert.fingerprint().to_hex()))?;
 
-    let ka = valid
+    let Some(ka) = valid
         .keys()
         .secret()
         .alive()
@@ -170,7 +177,9 @@ fn signing_keypair(cert: &Cert, password: Option<&str>) -> Result<sequoia_openpg
         .supported()
         .for_signing()
         .next()
-        .ok_or_else(|| Error::NoSecretKey(cert.fingerprint().to_hex()))?;
+    else {
+        return Ok(Box::new(crate::agent::signer_for(cert)?));
+    };
 
     let key = ka.key().clone();
     let key = if key.secret().is_encrypted() {
@@ -182,7 +191,7 @@ fn signing_keypair(cert: &Cert, password: Option<&str>) -> Result<sequoia_openpg
     } else {
         key
     };
-    Ok(key.into_keypair()?)
+    Ok(Box::new(key.into_keypair()?))
 }
 
 /// Shared decryption/verification callbacks.

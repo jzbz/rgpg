@@ -277,9 +277,19 @@ a card by their smartcard serial. Only connecting is async; the `KeyPair` it
 returns implements Sequoia's `Signer` and `Decryptor` synchronously, so it
 drops into the existing stream builders unchanged.
 
-Not wired yet: `ops`, `certify` and `revoke` still resolve secret keys from the
-local secrets directory only. The agent-backed path exists and is tested, but
-nothing calls it, and the GUI does not yet show card-backed keys.
+`ops::sign_detached` and `ops::encrypt` use it: local key material when the
+certificate carries it, the agent otherwise. Sign / Encrypt lists card-backed
+certificates as signers, labelled `(smartcard)`, and the list marks them with a
+`smartcard` pill. Signing on a real YubiKey is covered by an `#[ignore]`d test —
+ignored because it is interactive, since the agent may raise a PIN prompt:
+
+```bash
+RGPG_TEST_CERT=/path/to/cert.asc cargo test -p rgpg-core signs_through_the_agent -- --ignored --nocapture
+```
+
+Still local-only: `certify` and `revoke` resolve secret keys from the secrets
+directory, so a card key cannot yet certify or revoke. Decryption on a card is
+also unwired — `ops::decrypt` looks only at stored secret keys.
 
 ## Where certificates live
 

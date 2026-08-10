@@ -55,6 +55,11 @@ pub struct CertSummary {
     pub is_trust_root: bool,
     /// Why the certificate was revoked, when it has been.
     pub revocation: Option<String>,
+    /// Serial of the smartcard whose key can sign for this certificate, when
+    /// the user's gpg-agent reports one. Filled in by the caller.
+    pub card_serial: Option<String>,
+    /// The agent can sign for this certificate, card or not.
+    pub agent_backed: bool,
 }
 
 impl CertSummary {
@@ -144,6 +149,8 @@ impl CertSummary {
             authentication: crate::Authentication::Unknown,
             is_trust_root: false,
             revocation: revoked.then(|| describe_revocation(cert)).flatten(),
+            card_serial: None,
+            agent_backed: false,
         }
     }
 

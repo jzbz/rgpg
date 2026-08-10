@@ -12,6 +12,7 @@
 //! `sequoia-gpg-agent` is async and the rest of this crate is not, so calls are
 //! driven on a small dedicated runtime created once per process.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use sequoia_gpg_agent::Agent;
@@ -141,6 +142,41 @@ pub fn holds_signing_key(cert: &Cert) -> Result<Option<AgentKey>> {
     Ok(None)
 }
 
+/// Match a whole set of certificates against the agent in one round trip.
+///
+/// Returns fingerprint -> the agent key backing it. Per-certificate lookups
+/// would re-connect and re-list for every row in the list; the store is read
+/// wholesale, so this is too.
+pub fn annotate(certs: &[Cert]) -> HashMap<String, AgentKey> {
+    let mut found = HashMap::new();
+    let Ok(held) = keys() else {
+        return found;
+    };
+    let policy = crate::policy();
+
+    for cert in certs {
+        let Ok(valid) = cert.with_policy(&policy, None) else {
+            continue;
+        };
+        for ka in valid.keys().alive().revoked(false).for_signing() {
+            let Ok(grip) = Keygrip::of(ka.key().mpis()) else {
+                continue;
+            };
+            let grip = grip.to_string();
+            if let Some(key) = held.iter().find(|k| k.keygrip.eq_ignore_ascii_case(&grip)) {
+                // A card-held key wins over a file-held one for the same cert.
+                let better = found
+                    .get(&cert.fingerprint().to_hex())
+                    .is_none_or(|existing: &AgentKey| !existing.is_on_card());
+                if better {
+                    found.insert(cert.fingerprint().to_hex(), key.clone());
+                }
+            }
+        }
+    }
+    found
+}
+
 /// A signer for `cert`, backed by the agent.
 ///
 /// Prefers a key the agent reports as being on a smartcard, so a certificate
@@ -205,6 +241,38 @@ mod tests {
             keys.len(),
             on_card.len()
         );
+    }
+
+    /// Signs with whatever `RGPG_TEST_CERT` points at, through the agent.
+    ///
+    /// `#[ignore]` because it is interactive: a card key makes the agent's
+    /// pinentry ask for the PIN, and an unattended run would hang on it.
+    #[test]
+    #[ignore = "interactive: the agent will prompt for a PIN or passphrase"]
+    fn signs_through_the_agent() {
+        let Some(path) = std::env::var_os("RGPG_TEST_CERT") else {
+            eprintln!("RGPG_TEST_CERT unset; skipping");
+            return;
+        };
+
+        use sequoia_openpgp::parse::Parse;
+        let cert = Cert::from_file(&path).unwrap();
+        let backing = holds_signing_key(&cert).unwrap().expect("agent holds it");
+        eprintln!("signing with card={:?}", backing.card_serial);
+
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            crate::Store::open(dir.path().join("certs.d"), dir.path().join("secrets")).unwrap();
+        store.insert(&cert).unwrap();
+
+        let mut signature = Vec::new();
+        crate::ops::sign_detached(&cert, None, b"signed on the card", &mut signature).unwrap();
+        assert!(signature.starts_with(b"-----BEGIN PGP SIGNATURE-----"));
+
+        let result =
+            crate::ops::verify_detached(&store, &signature, b"signed on the card").unwrap();
+        assert!(result.all_good(), "signatures: {:?}", result.signatures);
+        eprintln!("verified: {}", result.signatures[0].signer);
     }
 
     /// Matching a certificate to the agent's copy of its secret, against a real
