@@ -364,6 +364,13 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |text| {
             let ui = ui_weak.unwrap();
+            // A worker holds the state lock for the whole of its operation,
+            // and that can be a card PIN prompt lasting a minute. Locking here
+            // would block the UI thread and freeze the window, so these
+            // read-only callbacks bow out while one is running.
+            if ui.get_busy() {
+                return;
+            }
             state.lock().unwrap().filter = text.to_lowercase();
             apply_filter(&ui, &state);
         }
@@ -373,6 +380,13 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |index| {
             let ui = ui_weak.unwrap();
+            // A worker holds the state lock for the whole of its operation,
+            // and that can be a card PIN prompt lasting a minute. Locking here
+            // would block the UI thread and freeze the window, so these
+            // read-only callbacks bow out while one is running.
+            if ui.get_busy() {
+                return;
+            }
             state.lock().unwrap().sort = Sort::from_index(index);
             apply_filter(&ui, &state);
         }
@@ -382,6 +396,13 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |index| {
             let ui = ui_weak.unwrap();
+            // A worker holds the state lock for the whole of its operation,
+            // and that can be a card PIN prompt lasting a minute. Locking here
+            // would block the UI thread and freeze the window, so these
+            // read-only callbacks bow out while one is running.
+            if ui.get_busy() {
+                return;
+            }
             state.lock().unwrap().scope = Scope::from_index(index);
             apply_filter(&ui, &state);
         }
@@ -391,6 +412,13 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |row| {
             let ui = ui_weak.unwrap();
+            // A worker holds the state lock for the whole of its operation,
+            // and that can be a card PIN prompt lasting a minute. Locking here
+            // would block the UI thread and freeze the window, so these
+            // read-only callbacks bow out while one is running.
+            if ui.get_busy() {
+                return;
+            }
             let guard = state.lock().unwrap();
 
             let Some(summary) = usize::try_from(row)

@@ -9,6 +9,7 @@ import { AboutDialog, CertifyDialog, DecryptVerifyDialog, DetailsDialog, KeygenD
 export { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow }
 
 component RailItem inherits Rectangle {
+    in property <bool> enabled: true;
     in property <string> text;
     in property <image> glyph;
     in property <int> count;
@@ -50,6 +51,7 @@ component RailItem inherits Rectangle {
     }
 
     touch := TouchArea {
+        enabled: root.enabled;
         mouse-cursor: MouseCursor.pointer;
         clicked => { root.clicked(); }
     }
@@ -58,6 +60,7 @@ component RailItem inherits Rectangle {
 component CertListRow inherits Rectangle {
     in property <CertRow> cert;
     in property <bool> selected;
+    in property <bool> enabled: true;
     callback clicked();
 
     height: 62px;
@@ -155,6 +158,7 @@ component CertListRow inherits Rectangle {
     }
 
     touch := TouchArea {
+        enabled: root.enabled;
         mouse-cursor: MouseCursor.pointer;
         clicked => { root.clicked(); }
     }
@@ -340,6 +344,7 @@ export component AppWindow inherits Window {
                 }
 
                 RailItem {
+                    enabled: !root.busy;
                     text: "All certificates";
                     glyph: Icons.shield;
                     count: root.count-all;
@@ -347,6 +352,7 @@ export component AppWindow inherits Window {
                     clicked => { root.scope = 0; root.scope-changed(0); }
                 }
                 RailItem {
+                    enabled: !root.busy;
                     text: "My keys";
                     glyph: Icons.key;
                     count: root.count-mine;
@@ -354,6 +360,7 @@ export component AppWindow inherits Window {
                     clicked => { root.scope = 1; root.scope-changed(1); }
                 }
                 RailItem {
+                    enabled: !root.busy;
                     text: "Other people";
                     glyph: Icons.users;
                     count: root.count-others;
@@ -430,6 +437,7 @@ export component AppWindow inherits Window {
                         placeholder: "Search name, e-mail or fingerprint";
                         glyph: Icons.search;
                         width: 300px;
+                        enabled: !root.busy;
                         y: (parent.height - self.height) / 2;
                         edited(text) => { root.filter-changed(text); }
                     }
@@ -525,6 +533,7 @@ export component AppWindow inherits Window {
                     if root.certs.length > 0: ListView {
                         for cert[index] in root.certs: CertListRow {
                             cert: cert;
+                            enabled: !root.busy;
                             selected: index == root.current-row;
                             clicked => {
                                 root.current-row = index;
