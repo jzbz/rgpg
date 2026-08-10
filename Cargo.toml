@@ -33,6 +33,10 @@ sequoia-wot = "0.15"
 # only way in on a machine that has GnuPG set up — and PIN entry stays with the
 # user's own pinentry, never with us.
 sequoia-gpg-agent = "0.6"
+# For Keygrip, which is how the agent indexes keys. Already in the tree via
+# sequoia-gpg-agent; naming it here only makes the type reachable. Its build
+# script needs the `capnp` compiler installed.
+sequoia-ipc = { version = "0.36", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
 anyhow = "1"

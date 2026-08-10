@@ -262,12 +262,15 @@ Two things fall out of that choice, both good:
 
 - **rgpg never sees a PIN.** The agent runs the user's own `pinentry`, so the
   card PIN and any passphrase stay between the user and GnuPG.
-- **No PC/SC dependency and no Cap'n Proto.** An earlier plan went through
-  `sequoia-keystore`, which needs the `capnp` compiler at build time and whose
-  gpg-agent backend uses its own home under `~/.sequoia` rather than the user's
-  `~/.gnupg` — asked for real keys by fingerprint, it returns nothing.
+- **No PC/SC dependency.** An earlier plan went through `sequoia-keystore`,
+  whose gpg-agent backend uses its own home under `~/.sequoia` rather than the
+  user's `~/.gnupg` — asked for real keys by fingerprint, it returns nothing.
   `sequoia-gpg-agent`, the layer beneath it, connects to the running agent
   directly.
+
+**Building needs the Cap'n Proto compiler** (`capnp`). Not for the keystore,
+which is gone, but for `sequoia-ipc`, which `sequoia-gpg-agent` sits on and
+whose build script invokes it. Install `capnproto` before `cargo build`.
 
 `rgpg_core::agent` enumerates what the agent holds and marks which keys are on
 a card by their smartcard serial. Only connecting is async; the `KeyPair` it

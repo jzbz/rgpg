@@ -15,6 +15,8 @@
 use std::sync::OnceLock;
 
 use sequoia_gpg_agent::Agent;
+use sequoia_ipc::Keygrip;
+use sequoia_openpgp::Cert;
 use sequoia_openpgp::packet::Key;
 use sequoia_openpgp::packet::key::{PublicParts, UnspecifiedRole};
 use tokio::runtime::Runtime;
@@ -114,6 +116,66 @@ pub fn signer(
         .map_err(|e| Error::invalid(format!("the agent cannot use this key: {e}")))
 }
 
+/// Whether the agent can act for any signing-capable key of `cert`, and if so
+/// which smartcard — if any — it is on.
+///
+/// Matching is by keygrip, which is what the agent indexes by, so a
+/// certificate imported from anywhere lines up with the agent's copy of its
+/// secret without the two ever having been introduced.
+pub fn holds_signing_key(cert: &Cert) -> Result<Option<AgentKey>> {
+    let held = keys()?;
+    let policy = crate::policy();
+    let Ok(valid) = cert.with_policy(&policy, None) else {
+        return Ok(None);
+    };
+
+    for ka in valid.keys().alive().revoked(false).for_signing() {
+        let Ok(grip) = Keygrip::of(ka.key().mpis()) else {
+            continue;
+        };
+        let grip = grip.to_string();
+        if let Some(found) = held.iter().find(|k| k.keygrip.eq_ignore_ascii_case(&grip)) {
+            return Ok(Some(found.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// A signer for `cert`, backed by the agent.
+///
+/// Prefers a key the agent reports as being on a smartcard, so a certificate
+/// whose secret exists both on a card and in a file signs on the card.
+pub fn signer_for(cert: &Cert) -> Result<sequoia_gpg_agent::KeyPair> {
+    let held = keys()?;
+    let policy = crate::policy();
+    let valid = cert
+        .with_policy(&policy, None)
+        .map_err(|_| Error::NoSecretKey(cert.fingerprint().to_hex()))?;
+
+    let mut candidates: Vec<_> = valid
+        .keys()
+        .alive()
+        .revoked(false)
+        .for_signing()
+        .filter_map(|ka| {
+            let grip = Keygrip::of(ka.key().mpis()).ok()?.to_string();
+            let held = held
+                .iter()
+                .find(|k| k.keygrip.eq_ignore_ascii_case(&grip))?;
+            Some((held.is_on_card(), ka.key().clone()))
+        })
+        .collect();
+
+    // Card first.
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    let (_, key) = candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::NoSecretKey(cert.fingerprint().to_hex()))?;
+
+    signer(&key.role_into_unspecified())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +204,36 @@ mod tests {
             "agent holds {} key(s), {} on a smartcard",
             keys.len(),
             on_card.len()
+        );
+    }
+
+    /// Matching a certificate to the agent's copy of its secret, against a real
+    /// certificate when one is offered via `RGPG_TEST_CERT`.
+    ///
+    /// Skipped by default: it needs a running agent that actually holds the
+    /// key, which is a property of the developer's machine, not of the code.
+    #[test]
+    fn matches_a_certificate_to_the_agents_key() {
+        let Some(path) = std::env::var_os("RGPG_TEST_CERT") else {
+            eprintln!("RGPG_TEST_CERT unset; skipping");
+            return;
+        };
+        if !available() {
+            eprintln!("no gpg-agent reachable; skipping");
+            return;
+        }
+
+        use sequoia_openpgp::parse::Parse;
+        let cert = Cert::from_file(&path).unwrap();
+        let found = holds_signing_key(&cert)
+            .unwrap()
+            .expect("the agent should hold this certificate's signing key");
+
+        eprintln!(
+            "{} -> keygrip {} card={:?}",
+            cert.fingerprint().to_hex(),
+            found.keygrip,
+            found.card_serial
         );
     }
 }

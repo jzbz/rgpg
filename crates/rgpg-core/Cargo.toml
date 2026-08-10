@@ -12,6 +12,7 @@ sequoia-openpgp.workspace = true
 sequoia-cert-store.workspace = true
 sequoia-wot.workspace = true
 sequoia-gpg-agent.workspace = true
+sequoia-ipc.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

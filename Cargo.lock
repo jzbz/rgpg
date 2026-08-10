@@ -5453,6 +5453,7 @@ dependencies = [
  "dirs",
  "sequoia-cert-store",
  "sequoia-gpg-agent",
+ "sequoia-ipc",
  "sequoia-openpgp",
  "sequoia-wot",
  "tempfile",
