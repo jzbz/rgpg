@@ -28,6 +28,12 @@ sequoia-cert-store = { version = "0.7", default-features = false }
 # Web-of-trust authentication. Depends on the same sequoia-openpgp 2.x and
 # cert-store 0.7 we already use, and forces no crypto backend of its own.
 sequoia-wot = "0.15"
+# Talks to the user's running gpg-agent. This is how rgpg reaches smartcard
+# keys: scdaemon owns the reader exclusively, so going through the agent is the
+# only way in on a machine that has GnuPG set up — and PIN entry stays with the
+# user's own pinentry, never with us.
+sequoia-gpg-agent = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 anyhow = "1"
 thiserror = "2"

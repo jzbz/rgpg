@@ -4,6 +4,7 @@
 //! `sequoia_openpgp` directly, so that the OpenPGP implementation stays
 //! replaceable and so that no Sequoia type ends up in a Slint callback.
 
+pub mod agent;
 pub mod cert;
 pub mod certify;
 pub mod error;

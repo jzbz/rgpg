@@ -250,6 +250,34 @@ certification standing. `revoke_certification` dates the revocation one second
 past the certification it retracts — which means it takes effect a second
 later, and the status bar says so.
 
+## Smartcards and YubiKeys
+
+Card keys are reached **through the user's `gpg-agent`**, not by talking to the
+reader. That is not a preference, it is the only thing that works: `scdaemon`
+holds the card with an exclusive PC/SC transaction, and a second process asking
+the reader gets `SCARD_E_SHARING_VIOLATION` in both shared and exclusive mode.
+It is why Kleopatra goes through gpg-agent too.
+
+Two things fall out of that choice, both good:
+
+- **rgpg never sees a PIN.** The agent runs the user's own `pinentry`, so the
+  card PIN and any passphrase stay between the user and GnuPG.
+- **No PC/SC dependency and no Cap'n Proto.** An earlier plan went through
+  `sequoia-keystore`, which needs the `capnp` compiler at build time and whose
+  gpg-agent backend uses its own home under `~/.sequoia` rather than the user's
+  `~/.gnupg` — asked for real keys by fingerprint, it returns nothing.
+  `sequoia-gpg-agent`, the layer beneath it, connects to the running agent
+  directly.
+
+`rgpg_core::agent` enumerates what the agent holds and marks which keys are on
+a card by their smartcard serial. Only connecting is async; the `KeyPair` it
+returns implements Sequoia's `Signer` and `Decryptor` synchronously, so it
+drops into the existing stream builders unchanged.
+
+Not wired yet: `ops`, `certify` and `revoke` still resolve secret keys from the
+local secrets directory only. The agent-backed path exists and is tested, but
+nothing calls it, and the GUI does not yet show card-backed keys.
+
 ## Where certificates live
 
 Public certificates go in a [pgp-cert-d][certd] directory, the same layout `sq`
