@@ -59,7 +59,7 @@ component FilePick inherits VerticalLayout {
 
 export component KeygenDialog inherits DialogShell {
     in property <bool> busy;
-    callback accepted(string, string, string, int, int);
+    callback accepted(string, string, string, int, int, int);
 
     title: "New key pair";
     subtitle: "The passphrase protects the secret key on disk. It cannot be recovered.";
@@ -103,6 +103,29 @@ export component KeygenDialog inherits DialogShell {
             }
         }
 
+        VerticalLayout {
+            spacing: 6px;
+            Text {
+                text: "Standard";
+                color: Theme.text-dim;
+                font-size: Theme.t-sm;
+            }
+            standard := Select {
+                model: ["Modern (RFC 9580)", "Compatible (RFC 4880)"];
+                enabled: !root.busy;
+            }
+            Text {
+                text: standard.current == 0
+                    ? "Stronger encryption. GnuPG 2.5 and later, and Sequoia. Older "
+                      + "software cannot encrypt to this key or check its signatures."
+                    : "Works with GnuPG 2.4 and everything older, using its weaker "
+                      + "encryption.";
+                color: Theme.text-faint;
+                font-size: Theme.t-sm;
+                wrap: word-wrap;
+            }
+        }
+
         Divider { }
 
         HorizontalLayout {
@@ -126,6 +149,7 @@ export component KeygenDialog inherits DialogShell {
                         pass-input.text,
                         key-type.current,
                         expiry.current,
+                        standard.current,
                     );
                 }
             }
@@ -778,9 +802,13 @@ export component NotepadDialog inherits DialogShell {
     in property <bool> busy;
     callback toggle-recipient(int);
     /// action: 0 sign, 1 encrypt, 2 sign and encrypt, 3 decrypt or verify
-    callback run(int, string, int, string);
+    callback run(int, string, int, string, string);
 
     property <string> password;
+    /// Symmetric passphrase. On the way out it encrypts for anyone holding it;
+    /// on the way in `password` already serves that purpose, so this is only
+    /// offered when encrypting.
+    property <string> secret;
     property <int> signer-index: 0;
 
     title: "Notepad";
@@ -889,6 +917,12 @@ export component NotepadDialog inherits DialogShell {
                 enabled: !root.busy;
                 edited(text) => { root.password = text; }
             }
+            Field {
+                placeholder: "Or a password to encrypt with";
+                secret: true;
+                enabled: !root.busy;
+                edited(text) => { root.secret = text; }
+            }
         }
 
         if root.result != "": Rectangle {
@@ -949,27 +983,28 @@ export component NotepadDialog inherits DialogShell {
                 text: "Decrypt / Verify";
                 glyph: Icons.unlock;
                 enabled: !root.busy && editor.text != "";
-                clicked => { root.run(3, editor.text, root.signer-index, root.password); }
+                clicked => { root.run(3, editor.text, root.signer-index, root.password, root.secret); }
             }
             Btn {
                 text: "Sign";
                 glyph: Icons.pen-line;
                 enabled: !root.busy && editor.text != "" && root.signers.length > 0;
-                clicked => { root.run(0, editor.text, root.signer-index, root.password); }
+                clicked => { root.run(0, editor.text, root.signer-index, root.password, root.secret); }
             }
             Btn {
                 text: "Encrypt";
                 glyph: Icons.lock;
-                enabled: !root.busy && editor.text != "" && root.chosen-recipients > 0;
-                clicked => { root.run(1, editor.text, root.signer-index, root.password); }
+                enabled: !root.busy && editor.text != ""
+                    && (root.chosen-recipients > 0 || root.secret != "");
+                clicked => { root.run(1, editor.text, root.signer-index, root.password, root.secret); }
             }
             Btn {
                 text: "Sign & Encrypt";
                 glyph: Icons.lock;
                 variant: Variant.primary;
-                enabled: !root.busy && editor.text != "" && root.chosen-recipients > 0
-                    && root.signers.length > 0;
-                clicked => { root.run(2, editor.text, root.signer-index, root.password); }
+                enabled: !root.busy && editor.text != "" && root.signers.length > 0
+                    && (root.chosen-recipients > 0 || root.secret != "");
+                clicked => { root.run(2, editor.text, root.signer-index, root.password, root.secret); }
             }
         }
     }

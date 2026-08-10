@@ -190,7 +190,7 @@ export component AppWindow inherits Window {
 
     // --- New key pair -----------------------------------------------------
     in-out property <bool> keygen-open: false;
-    callback generate-key(string, string, string, int, int);
+    callback generate-key(string, string, string, int, int, int);
 
     // --- Sign / Encrypt ---------------------------------------------------
     in-out property <bool> signenc-open: false;
@@ -276,7 +276,7 @@ export component AppWindow inherits Window {
     callback lifecycle-run(int, string, string, string);
 
     callback open-notepad();
-    callback np-run(int, string, int, string);
+    callback np-run(int, string, int, string, string);
 
     callback open-revoke();
     callback open-withdraw();
@@ -854,8 +854,8 @@ export component AppWindow inherits Window {
     if root.keygen-open: KeygenDialog {
         busy: root.busy;
         dismissed => { root.keygen-open = false; }
-        accepted(name, email, password, key-type, expiry) => {
-            root.generate-key(name, email, password, key-type, expiry);
+        accepted(name, email, password, key-type, expiry, standard) => {
+            root.generate-key(name, email, password, key-type, expiry, standard);
         }
     }
 
@@ -918,8 +918,8 @@ export component AppWindow inherits Window {
         result-tone: root.np-tone;
         dismissed => { root.notepad-open = false; }
         toggle-recipient(index) => { root.se-toggle-recipient(index); }
-        run(action, text, signer, password) => {
-            root.np-run(action, text, signer, password);
+        run(action, text, signer, password, secret) => {
+            root.np-run(action, text, signer, password, secret);
         }
     }
 

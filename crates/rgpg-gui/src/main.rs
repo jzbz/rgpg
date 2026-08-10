@@ -427,7 +427,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
 fn wire_keygen(ui: &AppWindow, state: &Shared) {
     ui.on_generate_key({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
-        move |name, email, password, key_type, expiry| {
+        move |name, email, password, key_type, expiry, standard| {
             let ui = ui_weak.unwrap();
 
             let request = KeyGenRequest {
@@ -436,6 +436,7 @@ fn wire_keygen(ui: &AppWindow, state: &Shared) {
                     .get(key_type.max(0) as usize)
                     .copied()
                     .unwrap_or_default(),
+                standard: keygen::Standard::from_index(standard),
                 validity: expiry_from_index(expiry),
                 password: Some(password.to_string()).filter(|p| !p.is_empty()),
             };
@@ -1529,15 +1530,17 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
 
     ui.on_np_run({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
-        move |action, text, signer_index, password| {
+        move |action, text, signer_index, password, secret| {
             let ui = ui_weak.unwrap();
             ui.set_busy(true);
             ui.set_status("Working…".into());
 
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
-            let (text, password) = (text.to_string(), password.to_string());
+            let (text, password, secret) =
+                (text.to_string(), password.to_string(), secret.to_string());
             std::thread::spawn(move || {
-                let outcome = run_notepad(&state, action, &text, signer_index, &password);
+                let outcome =
+                    run_notepad(&state, action, &text, signer_index, &password, &secret);
                 let _ = slint::invoke_from_event_loop(move || {
                     let ui = ui_weak.unwrap();
                     ui.set_busy(false);
@@ -1577,6 +1580,7 @@ fn run_notepad(
     text: &str,
     signer_index: i32,
     password: &str,
+    secret: &str,
 ) -> Result<(String, String, i32, Vec<rgpg_core::ops::SignatureReport>), String> {
     let guard = state.lock().unwrap();
     let password = Some(password).filter(|p| !p.is_empty());
@@ -1605,8 +1609,10 @@ fn run_notepad(
                     .map_err(|e| format!("Recipient {} unavailable: {e}", entry.label))?,
             );
         }
-        if out.is_empty() {
-            return Err("Select at least one recipient".to_string());
+        // A password on its own is a complete instruction; only object when
+        // there is neither.
+        if out.is_empty() && secret.is_empty() {
+            return Err("Select a recipient, or set a password".to_string());
         }
         Ok::<_, String>(out)
     };
@@ -1623,9 +1629,14 @@ fn run_notepad(
         1 | 2 => {
             let certs = recipients(&guard)?;
             let signing = if action == 2 { Some(signer(&guard)?) } else { None };
+            let passwords: Vec<String> = if secret.is_empty() {
+                Vec::new()
+            } else {
+                vec![secret.to_string()]
+            };
             ops::encrypt(
                 &certs,
-                &[],
+                &passwords,
                 signing.as_ref().map(|cert| (cert, password)),
                 text.as_bytes(),
                 &mut output,
