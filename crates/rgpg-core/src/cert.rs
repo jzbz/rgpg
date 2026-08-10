@@ -198,6 +198,101 @@ impl CertSummary {
     }
 }
 
+/// One subkey, flattened for the details dialog.
+#[derive(Debug, Clone)]
+pub struct SubkeySummary {
+    pub fingerprint: String,
+    pub algorithm: String,
+    pub created: SystemTime,
+    pub expires: Option<SystemTime>,
+    pub can_sign: bool,
+    pub can_encrypt: bool,
+    pub can_certify: bool,
+    pub revoked: bool,
+    pub has_secret: bool,
+}
+
+impl SubkeySummary {
+    pub fn capabilities(&self) -> String {
+        let mut out = String::new();
+        if self.can_certify { out.push('C'); }
+        if self.can_sign { out.push('S'); }
+        if self.can_encrypt { out.push('E'); }
+        if out.is_empty() { out.push('-'); }
+        out
+    }
+}
+
+/// Every subkey of `cert`, primary key excluded — it is already the headline
+/// of the details pane.
+pub fn subkeys(cert: &Cert) -> Vec<SubkeySummary> {
+    let policy = policy();
+    let now = SystemTime::now();
+    let Ok(valid) = cert.with_policy(&policy, now) else {
+        return Vec::new();
+    };
+
+    // ValidKeyAmalgamation has no revocation_status; ask the iterator for the
+    // revoked ones and match on fingerprint.
+    let revoked: std::collections::HashSet<String> = valid
+        .keys()
+        .subkeys()
+        .revoked(true)
+        .map(|ka| ka.key().fingerprint().to_hex())
+        .collect();
+
+    valid
+        .keys()
+        .subkeys()
+        .map(|ka| SubkeySummary {
+            fingerprint: ka.key().fingerprint().to_hex(),
+            algorithm: format!("{}", ka.key().pk_algo()),
+            created: ka.key().creation_time(),
+            expires: ka.key_expiration_time(),
+            can_sign: ka.for_signing(),
+            can_encrypt: ka.for_transport_encryption() || ka.for_storage_encryption(),
+            can_certify: ka.for_certification(),
+            revoked: revoked.contains(&ka.key().fingerprint().to_hex()),
+            has_secret: ka.key().has_secret(),
+        })
+        .collect()
+}
+
+/// One user ID with the parts the summary pane cannot show.
+#[derive(Debug, Clone)]
+pub struct UserIdDetail {
+    pub text: String,
+    pub is_primary: bool,
+    pub revoked: bool,
+    /// When the holder last self-signed this identity.
+    pub self_signed: Option<SystemTime>,
+}
+
+pub fn user_ids(cert: &Cert) -> Vec<UserIdDetail> {
+    let policy = policy();
+    let now = SystemTime::now();
+    let primary = cert
+        .with_policy(&policy, now)
+        .ok()
+        .and_then(|vc| vc.primary_userid().ok())
+        .map(|ua| ua.userid().clone());
+
+    cert.userids()
+        .map(|ua| UserIdDetail {
+            text: String::from_utf8_lossy(ua.userid().value()).into_owned(),
+            is_primary: primary.as_ref() == Some(ua.userid()),
+            revoked: matches!(
+                ua.revocation_status(&policy, now),
+                RevocationStatus::Revoked(_)
+            ),
+            self_signed: ua
+                .self_signatures()
+                .filter_map(|sig| sig.signature_creation_time())
+                .max(),
+        })
+        .collect()
+}
+
 fn describe_revocation(cert: &Cert) -> Option<String> {
     let (reason, message) = crate::revoke::revocation_reason(cert)?;
     Some(if message.is_empty() {

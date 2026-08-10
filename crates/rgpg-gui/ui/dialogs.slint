@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme, Icons, Icon } from "theme.slint";
-import { Btn, Check, DialogShell, Divider, Field, Monogram, Pill, Select, TextArea, Tone, Variant } from "widgets.slint";
-import { RecipientRow, SignatureRow, UserIdRow } from "types.slint";
+import { Btn, Check, DialogShell, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Select, TextArea, Tone, Variant } from "widgets.slint";
+import { CertRow, CertificationRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow } from "types.slint";
 
 // A file slot: label, the chosen path (or a hint), and a Choose button.
 component FilePick inherits VerticalLayout {
@@ -960,6 +960,149 @@ export component NotepadDialog inherits DialogShell {
                 enabled: !root.busy && editor.text != "" && root.chosen-recipients > 0
                     && root.signers.length > 0;
                 clicked => { root.run(2, editor.text, root.signer-index, root.password); }
+            }
+        }
+    }
+}
+
+export component DetailsDialog inherits DialogShell {
+    in property <CertRow> cert;
+    in property <[UserIdDetailRow]> user-ids;
+    in property <[SubkeyRow]> subkeys;
+    in property <[CertificationRow]> certifications;
+
+    title: root.cert.primary-user-id;
+    subtitle: "Everything the side panel has no room for.";
+    card-width: 720px;
+
+    VerticalLayout {
+        spacing: Theme.s4;
+
+        SectionLabel { text: "PRIMARY KEY"; }
+        VerticalLayout {
+            spacing: Theme.s2;
+            FieldRow { label: "Fingerprint"; value: root.cert.fingerprint-pretty; mono: true; }
+            FieldRow { label: "Algorithm"; value: root.cert.algorithm; }
+            FieldRow { label: "Created"; value: root.cert.created; }
+            FieldRow {
+                label: "Expires";
+                value: root.cert.expires == "" ? "never" : root.cert.expires;
+            }
+            FieldRow { label: "Usage"; value: root.cert.capabilities; }
+        }
+
+        Divider { }
+
+        SectionLabel { text: "USER IDS"; }
+        VerticalLayout {
+            spacing: Theme.s2;
+            for uid in root.user-ids: HorizontalLayout {
+                spacing: Theme.s2;
+                VerticalLayout {
+                    spacing: 1px;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: uid.text;
+                        color: uid.revoked ? Theme.text-faint : Theme.text;
+                        font-size: Theme.t-md;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: uid.self-signed == ""
+                            ? "no self-signature"
+                            : "self-signed " + uid.self-signed;
+                        color: Theme.text-faint;
+                        font-size: Theme.t-xs;
+                    }
+                }
+                if uid.is-primary: Pill { text: "primary"; tone: Tone.accent; }
+                if uid.revoked: Pill { text: "revoked"; tone: Tone.danger; }
+            }
+        }
+
+        Divider { }
+
+        SectionLabel { text: "SUBKEYS"; }
+        if root.subkeys.length == 0: Text {
+            text: "This certificate has no subkeys.";
+            color: Theme.text-faint;
+            font-size: Theme.t-sm;
+        }
+        VerticalLayout {
+            spacing: Theme.s2;
+            for key in root.subkeys: HorizontalLayout {
+                spacing: Theme.s2;
+                VerticalLayout {
+                    spacing: 1px;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: key.fingerprint;
+                        color: key.revoked ? Theme.text-faint : Theme.text;
+                        font-size: Theme.t-sm;
+                        font-family: "monospace";
+                        overflow: elide;
+                    }
+                    Text {
+                        text: key.algorithm + " · " + key.capabilities + " · created "
+                            + key.created
+                            + (key.expires == "" ? "" : " · until " + key.expires);
+                        color: Theme.text-faint;
+                        font-size: Theme.t-xs;
+                    }
+                }
+                if key.has-secret: Pill { text: "secret"; tone: Tone.accent; }
+                if key.revoked: Pill { text: "revoked"; tone: Tone.danger; }
+            }
+        }
+
+        Divider { }
+
+        SectionLabel { text: "CERTIFICATIONS"; }
+        if root.certifications.length == 0: Text {
+            text: "Nobody has certified this identity.";
+            color: Theme.text-faint;
+            font-size: Theme.t-sm;
+        }
+        VerticalLayout {
+            spacing: Theme.s2;
+            for entry in root.certifications: HorizontalLayout {
+                spacing: Theme.s2;
+                Icon {
+                    glyph: entry.is-revocation ? Icons.revoke
+                        : (entry.good ? Icons.certify : Icons.cross);
+                    tint: entry.is-revocation ? Theme.danger
+                        : (entry.good ? Theme.ok : Theme.text-faint);
+                    width: 14px;
+                    height: 14px;
+                    y: 2px;
+                }
+                VerticalLayout {
+                    spacing: 1px;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: entry.by-me ? entry.certifier + " (you)" : entry.certifier;
+                        color: Theme.text;
+                        font-size: Theme.t-sm;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: entry.detail;
+                        color: Theme.text-faint;
+                        font-size: Theme.t-xs;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        Divider { }
+
+        HorizontalLayout {
+            alignment: end;
+            Btn {
+                text: "Close";
+                variant: Variant.primary;
+                clicked => { root.dismissed(); }
             }
         }
     }

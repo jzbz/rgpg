@@ -1191,6 +1191,45 @@ fn reselect(ui: &AppWindow, state: &Shared, fingerprint: &str) {
 // -------------------------------------------------------------------- notepad
 
 fn wire_notepad(ui: &AppWindow, state: &Shared) {
+    ui.on_open_details({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let ui = ui_weak.unwrap();
+            let guard = state.lock().unwrap();
+            let fingerprint = ui.get_detail().fingerprint.to_string();
+            let Ok(cert) = guard.store.lookup(&fingerprint) else {
+                return;
+            };
+
+            let user_ids: Vec<UserIdDetailRow> = rgpg_core::cert::user_ids(&cert)
+                .iter()
+                .map(|u| UserIdDetailRow {
+                    text: u.text.clone().into(),
+                    is_primary: u.is_primary,
+                    revoked: u.revoked,
+                    self_signed: format_time(u.self_signed).into(),
+                })
+                .collect();
+            let subkeys: Vec<SubkeyRow> = rgpg_core::cert::subkeys(&cert)
+                .iter()
+                .map(|k| SubkeyRow {
+                    fingerprint: k.fingerprint.clone().into(),
+                    algorithm: k.algorithm.clone().into(),
+                    created: format_time(Some(k.created)).into(),
+                    expires: format_time(k.expires).into(),
+                    capabilities: k.capabilities().into(),
+                    revoked: k.revoked,
+                    has_secret: k.has_secret,
+                })
+                .collect();
+
+            ui.set_detail_user_ids(ModelRc::new(VecModel::from(user_ids)));
+            ui.set_detail_subkeys(ModelRc::new(VecModel::from(subkeys)));
+            drop(guard);
+            ui.set_details_open(true);
+        }
+    });
+
     ui.on_open_notepad({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {

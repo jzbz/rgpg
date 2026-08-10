@@ -62,3 +62,22 @@ export struct SignatureRow {
     signer: string,
     detail: string,
 }
+
+// A subkey row in the certificate details dialog.
+export struct SubkeyRow {
+    fingerprint: string,
+    algorithm: string,
+    created: string,
+    expires: string,
+    capabilities: string,
+    revoked: bool,
+    has-secret: bool,
+}
+
+// A user ID row in the certificate details dialog.
+export struct UserIdDetailRow {
+    text: string,
+    is-primary: bool,
+    revoked: bool,
+    self-signed: string,
+}

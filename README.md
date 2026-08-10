@@ -363,8 +363,6 @@ Reading `~/.gnupg` in place is possible but not built:
 Roughly in the order Kleopatra users would notice them missing:
 
 - **Reading GnuPG's store directly** — see [Coming from GnuPG](#coming-from-gnupg).
-- **Certificate details beyond the summary pane** — subkey list, per-user-ID
-  self-signatures.
 - **Revoking a single user ID or subkey.** Revocation today is all-or-nothing
   on the certificate, plus withdrawing certifications.
 - **Column sorting.** The list sorts own-keys-first then by name, and the rail
