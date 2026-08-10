@@ -78,6 +78,17 @@ only inside the `XDG_DATA_HOME` you give it, never your real one:
 source ~/.bashrc && XDG_DATA_HOME=/home/jz/zx/dev/artifacts/rgpg/demo-home cargo run -p rgpg-core --example seed-demo-store && XDG_DATA_HOME=/home/jz/zx/dev/artifacts/rgpg/demo-home cargo run -p rgpg-gui
 ```
 
+To screenshot the UI without a desktop — for reviewing a layout change, or from
+a machine with no display — run it against Xvfb. The software renderer is
+required here; see the adapter note under
+[Stack decisions](#gui-slint-on-winit-rendering-through-wgpu):
+
+```bash
+Xvfb :99 -screen 0 1400x900x24 & sleep 2; DISPLAY=:99 SLINT_BACKEND=winit-software XDG_DATA_HOME=/home/jz/zx/dev/artifacts/rgpg/demo-home cargo run -p rgpg-gui & sleep 8; DISPLAY=:99 import -window root /home/jz/zx/dev/artifacts/rgpg/shot.png
+```
+
+Drop shadows and other GPU-only effects will not appear in that capture.
+
 ## Stack decisions
 
 ### GUI: Slint on winit, rendering through wgpu
@@ -100,6 +111,18 @@ usable GPU:
 ```bash
 SLINT_BACKEND=winit-software cargo run -p rgpg-gui
 ```
+
+That escape hatch currently has to be used by hand. **When wgpu finds no
+compatible adapter the app panics rather than falling back**, inside
+`i-slint-core`'s `wgpu_29.rs` at adapter selection:
+
+    Failed to find an appropriate adapter: NotFound { .. incompatible_surface_backends: Backends(VULKAN) }
+
+Slint's documented renderer order is skia → femtovg → software, but the wgpu
+path aborts instead of returning an error the selector could fall back from. It
+reproduces on any display without a presentable Vulkan surface — a plain Xvfb,
+some VMs, some remote sessions. Until it is handled, those users get a crash
+instead of a slower window.
 
 `renderer-skia` is never enabled: it needs a C++ toolchain.
 

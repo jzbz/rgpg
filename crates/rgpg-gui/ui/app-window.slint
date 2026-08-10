@@ -206,6 +206,9 @@ export component AppWindow inherits Window {
     callback dv-pick-data();
     callback dv-run(string);
 
+    VerticalLayout {
+        spacing: 0px;
+
     HorizontalLayout {
         spacing: 0px;
 
@@ -265,7 +268,7 @@ export component AppWindow inherits Window {
                 }
                 RailItem {
                     text: "Other people";
-                    glyph: Icons.file;
+                    glyph: Icons.users;
                     count: root.count-others;
                     active: root.scope == 2;
                     clicked => { root.scope = 2; root.scope-changed(2); }
@@ -285,6 +288,7 @@ export component AppWindow inherits Window {
                     text: "Sign / Encrypt";
                     glyph: Icons.lock;
                     variant: Variant.ghost;
+                    wide: true;
                     enabled: !root.busy;
                     clicked => { root.open-sign-encrypt(); }
                 }
@@ -292,6 +296,7 @@ export component AppWindow inherits Window {
                     text: "Decrypt / Verify";
                     glyph: Icons.unlock;
                     variant: Variant.ghost;
+                    wide: true;
                     enabled: !root.busy;
                     clicked => { root.open-decrypt-verify(); }
                 }
@@ -411,8 +416,10 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                // Details
-                if root.has-selection: Rectangle {
+                // Details. Always present, even with nothing selected: letting
+                // it appear and disappear would reflow the list by 336px on
+                // every click.
+                Rectangle {
                     width: 336px;
                     background: Theme.surface;
                     horizontal-stretch: 0;
@@ -424,7 +431,29 @@ export component AppWindow inherits Window {
                         background: Theme.border;
                     }
 
-                    VerticalLayout {
+                    if !root.has-selection: VerticalLayout {
+                        alignment: center;
+                        padding: Theme.s5;
+                        spacing: Theme.s2;
+
+                        Text {
+                            text: "Nothing selected";
+                            color: Theme.text-dim;
+                            font-size: Theme.t-md;
+                            font-weight: Theme.w-medium;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: "Pick a certificate to see its fingerprint, "
+                                + "user IDs and what it can be used for.";
+                            color: Theme.text-faint;
+                            font-size: Theme.t-sm;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    if root.has-selection: VerticalLayout {
                         padding: Theme.s5;
                         spacing: Theme.s4;
                         alignment: start;
@@ -521,41 +550,42 @@ export component AppWindow inherits Window {
                     }
                 }
             }
+        }
+    }
 
-            // Status bar
+        // Status bar, spanning the rail as well as the content column.
+        Rectangle {
+            height: 28px;
+            background: Theme.surface-sunken;
+
             Rectangle {
-                height: 28px;
-                background: Theme.surface-sunken;
+                y: 0;
+                height: 1px;
+                width: parent.width;
+                background: Theme.border;
+            }
 
-                Rectangle {
-                    y: 0;
-                    height: 1px;
-                    width: parent.width;
-                    background: Theme.border;
+            HorizontalLayout {
+                padding-left: Theme.s4;
+                padding-right: Theme.s4;
+                spacing: Theme.s2;
+
+                if root.busy: Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 4px;
+                    background: Theme.accent;
+                    y: (parent.height - self.height) / 2;
+                    opacity: 0.4;
+                    animate opacity { duration: 700ms; iteration-count: -1; direction: alternate; }
                 }
 
-                HorizontalLayout {
-                    padding-left: Theme.s4;
-                    padding-right: Theme.s4;
-                    spacing: Theme.s2;
-
-                    if root.busy: Rectangle {
-                        width: 7px;
-                        height: 7px;
-                        border-radius: 4px;
-                        background: Theme.accent;
-                        y: (parent.height - self.height) / 2;
-                        opacity: 0.4;
-                        animate opacity { duration: 700ms; iteration-count: -1; direction: alternate; }
-                    }
-
-                    Text {
-                        text: root.status;
-                        color: Theme.text-dim;
-                        font-size: Theme.t-sm;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
+                Text {
+                    text: root.status;
+                    color: Theme.text-dim;
+                    font-size: Theme.t-sm;
+                    vertical-alignment: center;
+                    overflow: elide;
                 }
             }
         }

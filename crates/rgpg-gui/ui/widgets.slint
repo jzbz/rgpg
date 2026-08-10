@@ -57,6 +57,9 @@ export component Btn inherits Rectangle {
     in property <image> glyph;
     in property <Variant> variant: Variant.secondary;
     in property <bool> enabled: true;
+    /// Fills its container and left-aligns, for buttons used as navigation
+    /// rather than as a compact action.
+    in property <bool> wide: false;
     callback clicked();
 
     property <bool> filled: root.variant == Variant.primary || root.variant == Variant.danger;
@@ -86,7 +89,7 @@ export component Btn inherits Rectangle {
         padding-left: root.text == "" ? 0px : Theme.s3;
         padding-right: root.text == "" ? 0px : Theme.s3;
         spacing: 6px;
-        alignment: center;
+        alignment: root.wide ? start : center;
 
         if root.glyph.width > 0: Icon {
             glyph: root.glyph;
@@ -175,6 +178,9 @@ export component Check inherits Rectangle {
     callback toggled();
 
     height: 24px;
+    // Without this a Check in a row layout expands to an equal share of the
+    // width, which spreads two adjacent options to opposite ends of the dialog.
+    horizontal-stretch: 0;
     opacity: root.enabled ? 1.0 : 0.45;
 
     HorizontalLayout {
