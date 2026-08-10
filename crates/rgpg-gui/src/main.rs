@@ -328,7 +328,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let ui_weak = ui.as_weak();
         move || {
             let ui = ui_weak.unwrap();
-            if let Err(e) = open::that_detached("https://rgpg.pro") {
+            if let Err(e) = open::that_detached("https://rgpg.app/") {
                 ui.set_status(format!("Could not open the browser: {e}").into());
             }
         }
