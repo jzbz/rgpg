@@ -384,8 +384,13 @@ impl DecryptionHelper for Helper<'_> {
         // Nothing local fits. The message may be for a card key, whose secret
         // half exists only on the card — ask the agent, which will raise its
         // own PIN prompt if the card needs one.
+        // Read the store once, not once per recipient: certs() parses every
+        // certificate it returns, and a message to several people would
+        // otherwise re-parse the whole store for each of them.
+        let candidates = self.store.certs().unwrap_or_default();
+
         for pkesk in pkesks {
-            for cert in self.store.certs().unwrap_or_default() {
+            for cert in &candidates {
                 let Ok(valid) = cert.with_policy(&policy, None) else {
                     continue;
                 };
@@ -404,7 +409,7 @@ impl DecryptionHelper for Helper<'_> {
                     continue;
                 }
 
-                let Ok(mut pair) = crate::agent::decryptor_for(&cert) else {
+                let Ok(mut pair) = crate::agent::decryptor_for(cert) else {
                     continue;
                 };
                 if pkesk
@@ -412,7 +417,7 @@ impl DecryptionHelper for Helper<'_> {
                     .is_some_and(|(algo, session_key)| decrypt(algo, &session_key))
                 {
                     self.decrypted_with = Some(cert.fingerprint().to_hex());
-                    return Ok(Some(cert));
+                    return Ok(Some(cert.clone()));
                 }
             }
         }
@@ -591,7 +596,7 @@ mod tests {
         store.insert_secret(&bob).unwrap();
 
         let mut ciphertext = Vec::new();
-        encrypt(&[bob.clone()], &[], Some((&alice, None)), b"attack at dawn", &mut ciphertext)
+        encrypt(std::slice::from_ref(&bob), &[], Some((&alice, None)), b"attack at dawn", &mut ciphertext)
             .unwrap();
         assert!(ciphertext.starts_with(b"-----BEGIN PGP MESSAGE-----"));
 
@@ -613,7 +618,7 @@ mod tests {
         store.insert_secret(&alice).unwrap();
 
         let mut message = Vec::new();
-        encrypt(&[alice.clone()], &[], None, b"hello", &mut message).unwrap();
+        encrypt(std::slice::from_ref(&alice), &[], None, b"hello", &mut message).unwrap();
         assert_eq!(classify(&message), InputKind::Message);
 
         let mut signature = Vec::new();
@@ -652,7 +657,7 @@ mod tests {
         std::fs::write(&input, b"the coordinates are in the second envelope").unwrap();
 
         let encrypted = encrypted_name(&input);
-        encrypt_file(&[alice.clone()], &[], Some((&alice, None)), &input, &encrypted).unwrap();
+        encrypt_file(std::slice::from_ref(&alice), &[], Some((&alice, None)), &input, &encrypted).unwrap();
 
         let decrypted = dir.path().join("out.txt");
         let result = decrypt_file(&store, &encrypted, None, &decrypted).unwrap();
@@ -720,7 +725,7 @@ mod tests {
 
         let mut ciphertext = Vec::new();
         encrypt(
-            &[alice.clone()],
+            std::slice::from_ref(&alice),
             &["shared secret".to_string()],
             None,
             b"either way in",
@@ -742,8 +747,8 @@ mod tests {
 
     #[test]
     fn refuses_a_message_addressed_to_nobody() {
-        assert!(encrypt(&[], &[], None, b"x", &mut Vec::new()).is_err());
-        assert!(encrypt(&[], &[String::new()], None, b"x", &mut Vec::new()).is_err());
+        assert!(encrypt(&[], &[], None, b"x", Vec::new()).is_err());
+        assert!(encrypt(&[], &[String::new()], None, b"x", Vec::new()).is_err());
     }
 
     #[test]

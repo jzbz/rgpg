@@ -1626,7 +1626,7 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
                     ui.set_status("Copied to the clipboard".into());
                     // Let the button say so, then go back to offering the action.
                     let ui_weak = ui.as_weak();
-                    let _ = slint::Timer::single_shot(
+                    slint::Timer::single_shot(
                         std::time::Duration::from_millis(1500),
                         move || {
                             if let Some(ui) = ui_weak.upgrade() {

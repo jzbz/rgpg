@@ -268,7 +268,7 @@ fn keypair_for(cert: &Cert, purpose: Purpose) -> Result<sequoia_gpg_agent::KeyPa
         .collect();
 
     // Card first.
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.sort_by_key(|(on_card, _)| std::cmp::Reverse(*on_card));
     let (_, key) = candidates
         .into_iter()
         .next()
@@ -395,7 +395,7 @@ mod tests {
         // Encrypt to the card, then decrypt with it. No local secret exists
         // for this certificate, so success can only come from the agent.
         let mut ciphertext = Vec::new();
-        crate::ops::encrypt(&[card.clone()], &[], None, b"for the card only", &mut ciphertext)
+        crate::ops::encrypt(std::slice::from_ref(&card), &[], None, b"for the card only", &mut ciphertext)
             .unwrap();
 
         // Surface whichever of the two steps is actually failing.

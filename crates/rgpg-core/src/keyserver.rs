@@ -65,13 +65,12 @@ pub fn lookup(query: &str) -> Result<Vec<Found>> {
         return Err(Error::invalid("nothing to look up"));
     }
 
-    if query.contains('@') {
-        if let Ok(found) = lookup_wkd(query)
+    if query.contains('@')
+        && let Ok(found) = lookup_wkd(query)
             && !found.is_empty()
         {
             return Ok(found);
         }
-    }
     lookup_keyserver(query)
 }
 
@@ -190,12 +189,10 @@ fn get(url: &str) -> Result<Vec<u8>> {
 
 fn parse(bytes: &[u8]) -> Result<Vec<Cert>> {
     let mut out = Vec::new();
-    for cert in CertParser::from_bytes(bytes)? {
-        // A keyserver can serve several certificates; a broken one among them
-        // should not lose the rest.
-        if let Ok(cert) = cert {
-            out.push(cert);
-        }
+    // A keyserver can serve several certificates; a broken one among them
+    // should not lose the rest, so failures are dropped rather than returned.
+    for cert in CertParser::from_bytes(bytes)?.flatten() {
+        out.push(cert);
     }
     Ok(out)
 }
