@@ -7,9 +7,11 @@ export, sign, encrypt, decrypt and verify without touching a command line.
 Rust throughout, Slint for the GUI, Sequoia for the OpenPGP implementation. No
 webview, no Qt, no C++, no `gpg` subprocess.
 
-**Status: early, but end to end.** Generating, importing, exporting, signing,
-encrypting, decrypting and verifying all work from the window. Everything under
-[Not built yet](#not-built-yet) is missing.
+**Status: feature-complete against Kleopatra's common workflows, and young.**
+Generating, importing, exporting, certifying, revoking, looking up, publishing,
+and signing, encrypting, decrypting and verifying both files and text all work
+from the window — including on a smartcard. Nothing here has been used in anger
+by anyone but its author.
 
 ## Layout
 
@@ -27,163 +29,90 @@ Inside `crates/rgpg-gui/ui`:
 | --- | --- |
 | `theme.slint` | Colour, spacing and type tokens, plus the icon paths. |
 | `widgets.slint` | Buttons, fields, pills, dialogs — the app's own controls. |
-| `dialogs.slint` | New key pair, Sign / Encrypt, Decrypt / Verify, Certify, Revoke, Notepad. |
+| `dialogs.slint` | New key pair, Sign / Encrypt, Decrypt / Verify, Certify, Revoke, Lifecycle, Lookup, Details, Notepad, About. |
 | `app-window.slint` | The shell that assembles them. |
 | `types.slint` | Structs shared with Rust. |
 
 ## Look and feel
 
-The app follows the system light/dark setting but not the system *widget style*.
-Slint would otherwise give macOS `cupertino` controls and Linux `fluent` ones,
-which reads as two different products; `build.rs` pins the style so the only
-platform character left is the window frame, the UI font, and the scrollbars.
+The app follows the system light/dark setting but not the system *widget
+style*: Slint would otherwise give macOS `cupertino` controls and Linux
+`fluent` ones, which reads as two different products. `build.rs` pins the
+style, so the only platform character left is the window frame, the UI font
+and the scrollbars.
 
 Everything else is drawn by the design system in `theme.slint` and
-`widgets.slint`: buttons, text fields, checkboxes, the dropdown, pills, the
-monogram avatars and the modal shell. Only `ListView` comes from std-widgets,
-for its virtualised scrolling.
+`widgets.slint`. Only `ListView` comes from std-widgets, for virtualised
+scrolling. Icons are [Lucide](https://lucide.dev/) SVGs, vendored under
+`ui/icons` and recoloured through `Image`'s `colorize`, so one file serves
+every tone in both themes.
 
-Icons are [Lucide](https://lucide.dev/) SVGs in `ui/icons`, vendored rather than
-fetched, and recoloured through `Image`'s `colorize` so one file serves every
-tone in both light and dark. They are 24×24 on a 2px round-cap stroke; the one
-place an icon is drawn at 44px uses a thinned copy, because SVG scales the
-stroke along with the shape. Lucide is ISC licensed and its notice is kept at
-`ui/icons/LICENSE`.
-
-`Icon` decides whether a button or pill has a glyph by asking the image for its
-intrinsic width — a loaded SVG reports 24, an unset one reports 0 — so text-only
-controls need no extra flag.
-
-Two consequences worth knowing:
-
-- Certificate colours are a hash of the fingerprint, so a key keeps its monogram
-  tint between sessions and across light and dark.
-- Long operations run on a worker thread and report back through the event loop,
-  so generating an RSA-4096 key does not freeze the window.
+Long operations run on a worker thread and report back through the event loop,
+so generating an RSA-4096 key does not freeze the window.
 
 ## Build and run
 
+Needs the Cap'n Proto compiler (`capnp`) installed.
+
 ```bash
-source ~/.bashrc && cargo run -p rgpg-gui
+cargo run -p rgpg-gui
 ```
 
 ```bash
-source ~/.bashrc && cargo test --workspace
+cargo test --workspace
 ```
 
-To look at the app with content in it, seed a throwaway store first. It writes
-only inside the `XDG_DATA_HOME` you give it, never your real one:
+Some tests are `#[ignore]`d because they need the network, a smartcard, or a
+PIN prompt. Run them with `-- --ignored`.
+
+To try the app with content in it, seed a throwaway store. It writes only
+inside the `XDG_DATA_HOME` you give it:
 
 ```bash
-source ~/.bashrc && XDG_DATA_HOME=/home/jz/zx/dev/artifacts/rgpg/demo-home cargo run -p rgpg-core --example seed-demo-store && XDG_DATA_HOME=/home/jz/zx/dev/artifacts/rgpg/demo-home cargo run -p rgpg-gui
+XDG_DATA_HOME=/tmp/rgpg-demo cargo run -p rgpg-core --example seed-demo-store && XDG_DATA_HOME=/tmp/rgpg-demo cargo run -p rgpg-gui
 ```
-
-To screenshot the UI without a desktop — for reviewing a layout change, or from
-a machine with no display — run it against Xvfb. The software renderer is
-required here; see the adapter note under
-[Stack decisions](#gui-slint-on-winit-rendering-through-wgpu):
-
-```bash
-Xvfb :99 -screen 0 1400x900x24 & sleep 2; DISPLAY=:99 SLINT_BACKEND=winit-software XDG_DATA_HOME=/home/jz/zx/dev/artifacts/rgpg/demo-home cargo run -p rgpg-gui & sleep 8; DISPLAY=:99 import -window root /home/jz/zx/dev/artifacts/rgpg/shot.png
-```
-
-Drop shadows and other GPU-only effects will not appear in that capture.
 
 ## Stack decisions
 
 ### GUI: Slint on winit, rendering through wgpu
 
-`slint` is pulled in with `default-features = false`. Two of its defaults are
-actively unwanted:
+`slint` is pulled in with `default-features = false`, because two of its
+defaults are unwanted. `backend-default` compiles in the Qt backend whenever
+`qmake` is on the build machine's `PATH` and then *prefers it at runtime*, so a
+default build renders through Qt on one developer's machine and winit on
+another. And `renderer-femtovg` is FemtoVG over OpenGL, which is deprecated on
+macOS; `renderer-femtovg-wgpu` is the same renderer over Vulkan and Metal.
+`renderer-skia` is never enabled — it needs a C++ toolchain.
 
-- **`backend-default`** compiles in the Qt backend whenever `qmake` is on the
-  build machine's `PATH`, and Slint's runtime backend order is `qt`, `winit`,
-  `linuxkms` — so a default build on a KDE developer's machine silently renders
-  through Qt, and through winit everywhere else. Naming `backend-winit`
-  explicitly makes the build reproducible and keeps C++ out.
-- **`renderer-femtovg`** is FemtoVG over OpenGL. OpenGL is deprecated on macOS.
-  `renderer-femtovg-wgpu` is the same renderer over wgpu — Vulkan on Linux,
-  Metal on macOS — and is still pure Rust.
-
-`renderer-software` stays enabled as an escape hatch for machines without a
-usable GPU:
-
-```bash
-SLINT_BACKEND=winit-software cargo run -p rgpg-gui
-```
-
-Setting it by hand should not be necessary. Left to itself, Slint decides
-whether wgpu can work at window-creation time, and answers "no" with an
-`expect` — so a machine without a usable GPU gets
-
-    Failed to find an appropriate adapter: NotFound { .. incompatible_surface_backends: Backends(VULKAN) }
-
-instead of a window. That is not a rare configuration: it is any display with
-no presentable Vulkan surface, which covers plain X servers, a good number of
-VMs, and remote sessions. `configure_renderer` and `restart_with_software_renderer`
-in `main.rs` handle it in two stages, because one is not enough:
-
-1. **Ask for wgpu explicitly, before any window exists.** `BackendSelector`'s
-   `select()` probes for an adapter and *returns* failure rather than panicking,
-   so the software renderer can be chosen cleanly. This catches every machine
-   with no GPU adapter at all.
-2. **Catch the panic and re-exec.** The probe asks for an adapter without a
-   surface, so a driver that exists but cannot present still passes it and still
-   fails later. A panic hook recognises that one message, and the process
-   restarts itself with `SLINT_BACKEND=winit-software`. A fresh process rather
-   than a retry in place: Slint's platform can only be set once. A guard
-   variable stops it looping, and any *other* panic is re-raised untouched
-   rather than being mistaken for a graphics fault.
-
-The backend set is pinned to wgpu's `PRIMARY`. `WGPUSettings::default()` is
-wider and includes the GL backend, which looks like a free extra fallback and
-is not: on a display it cannot use, wgpu's GL backend **hangs** instead of
-failing. A crash that restarts is recoverable; a window that never appears is
-not. A GL-only machine therefore gets the software renderer.
-
-Verified against five graphics configurations under Xvfb — working software
-Vulkan, no Vulkan with GL present, no graphics stack at all, a real GPU ICD
-that cannot present, and a mismatched ICD — plus a real Wayland desktop, which
-still maps `libvulkan_radeon.so` and prints nothing.
-
-`renderer-skia` is never enabled: it needs a C++ toolchain.
+A machine with no usable GPU falls back to the software renderer
+automatically. Slint left alone would abort instead; how that is handled, and
+two approaches that do not work, are documented above `configure_renderer` in
+`main.rs`.
 
 ### OpenPGP: Sequoia with the RustCrypto backend
 
 `sequoia-openpgp` defaults to Nettle (C). This build selects `crypto-rust`,
-which requires two explicit opt-ins:
+which demands two explicit opt-ins — `allow-experimental-crypto`, because the
+backend is not one of Sequoia's mature ones, and `allow-variable-time-crypto`,
+because it does not guarantee constant-time operation everywhere.
 
-- `allow-experimental-crypto` — the RustCrypto backend is not one of Sequoia's
-  "mature" backends.
-- `allow-variable-time-crypto` — it does not guarantee constant-time operation
-  for every algorithm.
+Both are real warnings rather than paperwork: this build is more exposed to
+timing side channels than a Nettle or OpenSSL build. On a desktop where an
+attacker is not co-resident that is an acceptable trade for a single-language
+build. It would not be on a shared host.
 
-Both are load-bearing warnings, not paperwork: this build is more exposed to
-timing side channels than a Nettle or OpenSSL build would be. On a desktop
-machine where an attacker is not co-resident that is an acceptable trade for a
-single-language build; it would not be on a shared host.
-
-`compression-bzip2` is also off, because it links C bzip2. The cost is that
-BZip2-compressed messages — rare, and not produced by anything modern — cannot
-be read.
+`compression-bzip2` is off, as it links C bzip2. The cost is that
+BZip2-compressed messages cannot be read; nothing modern produces them.
 
 ### What is *not* pure Rust
 
-Three C libraries survive in the dependency graph. Two are unavoidable on a
-Linux desktop; one is a choice worth revisiting:
-
 | Library | Via | Why |
 | --- | --- | --- |
-| `libsqlite3` | `sequoia-cert-store` → `rusqlite` | cert-d keeps a SQLite index next to the directory for lookup by e-mail and subkey. Not optional in that crate. |
+| `libsqlite3` | `sequoia-cert-store` → `rusqlite` | cert-d keeps a SQLite index for lookup by e-mail and subkey. Not optional in that crate. |
 | `fontconfig` | `i-slint-core` | System font discovery on Linux. |
 | `libwayland` | `winit` | Loaded at runtime on a Wayland session. |
 
-The SQLite one is a deliberate choice to keep. Dropping it means dropping
-`sequoia-cert-store` and driving `openpgp-cert-d` (already in the tree, pure
-Rust) directly, which costs the lookup-by-e-mail and merge-strategy machinery —
-both would have to be hand-rolled, and the merge rules for combining two
-versions of the same certificate are exactly the kind of thing worth not
-reimplementing. None of it is in the crypto path.
+Building also needs the Cap'n Proto compiler (`capnp`), for `sequoia-ipc`.
 
 ## Certifying and trust
 
@@ -266,54 +195,16 @@ later, and the status bar says so.
 ## Smartcards and YubiKeys
 
 Card keys are reached **through the user's `gpg-agent`**, not by talking to the
-reader. That is not a preference, it is the only thing that works: `scdaemon`
-holds the card with an exclusive PC/SC transaction, and a second process asking
-the reader gets `SCARD_E_SHARING_VIOLATION` in both shared and exclusive mode.
-It is why Kleopatra goes through gpg-agent too.
+reader. That is not a preference: `scdaemon` holds the card with an exclusive
+PC/SC transaction, so a second process asking the reader directly gets
+`SCARD_E_SHARING_VIOLATION`. It is why Kleopatra goes through gpg-agent too.
 
-Two things fall out of that choice, both good:
+Two things follow, both good. **rgpg never sees a PIN** — the agent runs the
+user's own `pinentry`. And there is no PC/SC dependency.
 
-- **rgpg never sees a PIN.** The agent runs the user's own `pinentry`, so the
-  card PIN and any passphrase stay between the user and GnuPG.
-- **No PC/SC dependency.** An earlier plan went through `sequoia-keystore`,
-  whose gpg-agent backend uses its own home under `~/.sequoia` rather than the
-  user's `~/.gnupg` — asked for real keys by fingerprint, it returns nothing.
-  `sequoia-gpg-agent`, the layer beneath it, connects to the running agent
-  directly.
-
-**Building needs the Cap'n Proto compiler** (`capnp`). Not for the keystore,
-which is gone, but for `sequoia-ipc`, which `sequoia-gpg-agent` sits on and
-whose build script invokes it. Install `capnproto` before `cargo build`.
-
-`rgpg_core::agent` enumerates what the agent holds and marks which keys are on
-a card by their smartcard serial. Only connecting is async; the `KeyPair` it
-returns implements Sequoia's `Signer` and `Decryptor` synchronously, so it
-drops into the existing stream builders unchanged.
-
-`ops::sign_detached` and `ops::encrypt` use it: local key material when the
-certificate carries it, the agent otherwise. Sign / Encrypt lists card-backed
-certificates as signers, labelled `(smartcard)`, and the list marks them with a
-`smartcard` pill. Signing on a real YubiKey is covered by an `#[ignore]`d test —
-ignored because it is interactive, since the agent may raise a PIN prompt:
-
-```bash
-RGPG_TEST_CERT=/path/to/cert.asc cargo test -p rgpg-core signs_through_the_agent -- --ignored --nocapture
-```
-
-`certify` takes the same fallback, so a card key can certify — verified on the
-YubiKey.
-
-Decryption on a card works too, and needs you present: the agent raises its
-own pinentry for the card PIN, which rgpg never sees.
-
-For that prompt to appear the agent has to be told where to put it, the way
-gpg does on every connection. The values are validated first — an Assuan option
-value cannot contain whitespace, and `GPG_TTY` is very often the literal string
-"not a tty" when a program was started without a terminal. Sending that
-malforms the command and the agent then rejects whatever arrives *next*, so the
-failure appears to belong to an unrelated call. That cost four wrong diagnoses.
-
-`revoke` is still local-only.
+Signing, certifying and decrypting all work on a card. For the agent to raise
+its prompt it has to be told where to put it, which is fiddly enough to have
+its own note above `set_pinentry_context` in `agent.rs`.
 
 ## Keyservers
 
@@ -388,31 +279,10 @@ Reading `~/.gnupg` in place is possible but not built:
 - A pre-2.1 `~/.gnupg/pubring.gpg` *is* a plain OpenPGP keyring and imports
   as-is today.
 
-## Not built yet
-
-Roughly in the order Kleopatra users would notice them missing:
-
-
-- **Smartcard / YubiKey** (`sequoia-keystore-openpgp-card`).
-- **Deleting certificates.** Unlinking the cert-d file is not enough: sequoia-cert-store keeps an authoritative SQLite index beside it, so a removed certificate is still listed by a freshly reopened store. Needs removal support in cert-d, or a different backing store.
-- **Column sorting.** `StandardTableView` emits `sort-ascending`/`sort-descending`;
-  nothing handles them.
-- **Clipboard operations** and drag-and-drop import.
-
 ## Licence
 
-rgpg's own source is MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
-Two dependencies carry obligations that MIT does not, and both are worth
-knowing about before the first release:
-
-- **Slint** is tri-licensed: GPLv3, a royalty-free desktop/mobile licence, or a
-  commercial licence. An MIT release of rgpg is not the GPLv3 option, so it
-  relies on the royalty-free terms, which require attribution in the
-  application. There is no attribution in the UI yet.
-- **`sequoia-openpgp`** is LGPL-2.0-or-later and Rust links it statically.
-  LGPL §6 asks that recipients be able to relink against a modified version of
-  the library, which a statically linked binary does not offer on its own.
-
-Neither is a blocker for source distribution; both need a decision before
-shipping binaries.
+Two dependencies add obligations MIT does not, both relevant only when
+shipping binaries: Slint's royalty-free terms require the attribution in the
+About box, and `sequoia-openpgp` is LGPL-2.0-or-later linked statically.

@@ -332,7 +332,21 @@ impl DecryptionHelper for Helper<'_> {
                     continue;
                 };
 
-                for ka in valid.keys().secret() {
+                // Encryption keys only: a wildcard PKESK names no recipient,
+                // so without this filter every signing and certification key
+                // gets unlocked and tried as well.
+                //
+                // Deliberately *not* filtered by alive/revoked. Old mail must
+                // stay readable after a subkey expires or is retired —
+                // revoking a key withdraws it for future use, it does not
+                // burn the archive.
+                let usable = valid
+                    .keys()
+                    .secret()
+                    .for_transport_encryption()
+                    .chain(valid.keys().secret().for_storage_encryption());
+
+                for ka in usable {
                     if let Some(handle) = pkesk.recipient()
                         && !handle.aliases(ka.key().key_handle())
                     {
@@ -394,12 +408,13 @@ impl DecryptionHelper for Helper<'_> {
                 let Ok(valid) = cert.with_policy(&policy, None) else {
                     continue;
                 };
+                // Same permissive rule as the local path above: a card key
+                // that has since been revoked must still open what it
+                // encrypted while it was current.
                 let matches = valid
                     .keys()
-                    .alive()
-                    .revoked(false)
                     .for_transport_encryption()
-                    .chain(valid.keys().alive().revoked(false).for_storage_encryption())
+                    .chain(valid.keys().for_storage_encryption())
                     .any(|ka| {
                         pkesk
                             .recipient()
@@ -697,6 +712,42 @@ mod tests {
         let output = dir.path().join("out.txt");
         assert!(decrypt_file(&store, &encrypted, None, &output).is_err());
         assert!(!output.exists(), "a failed decryption must not create the output file");
+    }
+
+    #[test]
+    fn a_revoked_key_still_opens_what_it_encrypted() {
+        let (dir, store) = scratch_store();
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+
+        let mut ciphertext = Vec::new();
+        encrypt(
+            std::slice::from_ref(&alice),
+            &[],
+            None,
+            b"written while current",
+            &mut ciphertext,
+        )
+        .unwrap();
+
+        // Retire the whole certificate, as someone rotating keys would.
+        let mut request = crate::revoke::RevokeRequest::new(alice.fingerprint().to_hex());
+        request.reason = crate::revoke::Reason::Superseded;
+        crate::revoke::revoke_cert(&store, &request).unwrap();
+        assert_eq!(
+            crate::CertSummary::from_cert(&store.lookup(&alice.fingerprint().to_hex()).unwrap())
+                .validity,
+            crate::Validity::Revoked
+        );
+
+        // The archive must stay readable. Revoking withdraws a key from future
+        // use; it does not destroy what was already sent.
+        let mut plaintext = Vec::new();
+        decrypt(&store, &ciphertext, None, &mut plaintext).unwrap();
+        assert_eq!(plaintext, b"written while current");
+        let _ = dir;
     }
 
     #[test]
