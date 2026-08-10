@@ -314,8 +314,44 @@ impl DecryptionHelper for Helper<'_> {
             }
         }
 
+        // Nothing local fits. The message may be for a card key, whose secret
+        // half exists only on the card — ask the agent, which will raise its
+        // own PIN prompt if the card needs one.
+        for pkesk in pkesks {
+            for cert in self.store.certs().unwrap_or_default() {
+                let Ok(valid) = cert.with_policy(&policy, None) else {
+                    continue;
+                };
+                let matches = valid
+                    .keys()
+                    .alive()
+                    .revoked(false)
+                    .for_transport_encryption()
+                    .chain(valid.keys().alive().revoked(false).for_storage_encryption())
+                    .any(|ka| {
+                        pkesk
+                            .recipient()
+                            .is_none_or(|handle| handle.aliases(ka.key().key_handle()))
+                    });
+                if !matches {
+                    continue;
+                }
+
+                let Ok(mut pair) = crate::agent::decryptor_for(&cert) else {
+                    continue;
+                };
+                if pkesk
+                    .decrypt(&mut pair, sym_algo)
+                    .is_some_and(|(algo, session_key)| decrypt(algo, &session_key))
+                {
+                    self.decrypted_with = Some(cert.fingerprint().to_hex());
+                    return Ok(Some(cert));
+                }
+            }
+        }
+
         Err(anyhow::anyhow!(
-            "no secret key in the store can decrypt this message"
+            "no secret key in the store or the agent can decrypt this message"
         ))
     }
 }

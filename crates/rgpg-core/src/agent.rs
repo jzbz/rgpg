@@ -177,22 +177,55 @@ pub fn annotate(certs: &[Cert]) -> HashMap<String, AgentKey> {
     found
 }
 
+/// A certification key for `cert`, backed by the agent.
+///
+/// Certifying uses a different capability from signing messages, so this
+/// cannot share `signer_for`: on most certificates the certification key is
+/// the primary key and the signing key is a subkey.
+pub fn certifier_for(cert: &Cert) -> Result<sequoia_gpg_agent::KeyPair> {
+    keypair_for(cert, Purpose::Certify)
+}
+
+/// A decryptor for `cert`, backed by the agent. The returned `KeyPair`
+/// implements Sequoia's `Decryptor` as well as `Signer`.
+pub fn decryptor_for(cert: &Cert) -> Result<sequoia_gpg_agent::KeyPair> {
+    keypair_for(cert, Purpose::Decrypt)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Purpose {
+    Sign,
+    Certify,
+    Decrypt,
+}
+
 /// A signer for `cert`, backed by the agent.
 ///
 /// Prefers a key the agent reports as being on a smartcard, so a certificate
 /// whose secret exists both on a card and in a file signs on the card.
 pub fn signer_for(cert: &Cert) -> Result<sequoia_gpg_agent::KeyPair> {
+    keypair_for(cert, Purpose::Sign)
+}
+
+fn keypair_for(cert: &Cert, purpose: Purpose) -> Result<sequoia_gpg_agent::KeyPair> {
     let held = keys()?;
     let policy = crate::policy();
     let valid = cert
         .with_policy(&policy, None)
         .map_err(|_| Error::NoSecretKey(cert.fingerprint().to_hex()))?;
 
-    let mut candidates: Vec<_> = valid
-        .keys()
-        .alive()
-        .revoked(false)
-        .for_signing()
+    let usable = valid.keys().alive().revoked(false);
+    let usable: Vec<_> = match purpose {
+        Purpose::Sign => usable.for_signing().collect(),
+        Purpose::Certify => usable.for_certification().collect(),
+        Purpose::Decrypt => usable
+            .for_transport_encryption()
+            .chain(valid.keys().alive().revoked(false).for_storage_encryption())
+            .collect(),
+    };
+
+    let mut candidates: Vec<_> = usable
+        .into_iter()
         .filter_map(|ka| {
             let grip = Keygrip::of(ka.key().mpis()).ok()?.to_string();
             let held = held
@@ -273,6 +306,71 @@ mod tests {
             crate::ops::verify_detached(&store, &signature, b"signed on the card").unwrap();
         assert!(result.all_good(), "signatures: {:?}", result.signatures);
         eprintln!("verified: {}", result.signatures[0].signer);
+    }
+
+    /// Decrypting to, and certifying with, a card key. Interactive for the
+    /// same reason as `signs_through_the_agent`.
+    #[test]
+    #[ignore = "interactive: the agent will prompt for a PIN or passphrase"]
+    fn decrypts_and_certifies_through_the_agent() {
+        let Some(path) = std::env::var_os("RGPG_TEST_CERT") else {
+            eprintln!("RGPG_TEST_CERT unset; skipping");
+            return;
+        };
+
+        use sequoia_openpgp::parse::Parse;
+        let card = Cert::from_file(&path).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            crate::Store::open(dir.path().join("certs.d"), dir.path().join("secrets")).unwrap();
+        store.insert(&card).unwrap();
+
+        {
+            let held = keys().unwrap();
+            let policy = crate::policy();
+            let valid = card.with_policy(&policy, None).unwrap();
+            for ka in valid.keys().alive().revoked(false) {
+                let grip = Keygrip::of(ka.key().mpis()).map(|g| g.to_string()).unwrap_or_default();
+                let m = held.iter().find(|k| k.keygrip.eq_ignore_ascii_case(&grip));
+                eprintln!(
+                    "  subkey {} sign={} enc={} agent={:?}",
+                    ka.key().fingerprint().to_hex(),
+                    ka.for_signing(),
+                    ka.for_transport_encryption(),
+                    m.map(|k| k.card_serial.clone()),
+                );
+            }
+        }
+
+        // Certify first, so a decryption failure does not mask its result.
+        let stranger = crate::keygen::generate(&crate::keygen::KeyGenRequest::new(
+            "Stranger <s@example.org>",
+        ))
+        .unwrap()
+        .cert;
+        store.insert(&stranger).unwrap();
+        let mut request = crate::certify::CertifyRequest::new(
+            card.fingerprint().to_hex(),
+            stranger.fingerprint().to_hex(),
+        );
+        request.user_ids = vec!["Stranger <s@example.org>".to_string()];
+        crate::certify::certify(&store, &request).unwrap();
+        let reloaded = store.lookup(&stranger.fingerprint().to_hex()).unwrap();
+        let found = crate::certify::certifications(&store, &reloaded).unwrap();
+        assert_eq!(found[0].verified, Some(true));
+        eprintln!("certified by the card: {}", found[0].certifier);
+
+        // Encrypt to the card, then decrypt with it. No local secret exists
+        // for this certificate, so success can only come from the agent.
+        let mut ciphertext = Vec::new();
+        crate::ops::encrypt(&[card.clone()], None, b"for the card only", &mut ciphertext).unwrap();
+
+        let mut plaintext = Vec::new();
+        let result = crate::ops::decrypt(&store, &ciphertext, None, &mut plaintext).unwrap();
+        assert_eq!(plaintext, b"for the card only");
+        assert_eq!(result.decrypted_with, Some(card.fingerprint().to_hex()));
+        eprintln!("decrypted on the card");
+
     }
 
     /// Matching a certificate to the agent's copy of its secret, against a real

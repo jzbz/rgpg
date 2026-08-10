@@ -105,34 +105,42 @@ pub fn certify(store: &Store, request: &CertifyRequest) -> Result<Cert> {
     }
 
     let policy = policy();
-    let certifier = store.secret_cert(&request.certifier)?;
+    // The certifier may be a card key, which has no local secret half; the
+    // public certificate is enough for the agent to find it by keygrip.
+    let certifier = store
+        .secret_cert(&request.certifier)
+        .or_else(|_| store.lookup(&request.certifier))?;
     let target = store.lookup(&request.target)?;
 
     let valid = certifier
         .with_policy(&policy, None)
         .map_err(|_| Error::NoSecretKey(request.certifier.clone()))?;
-    let ka = valid
+    let local = valid
         .keys()
         .secret()
         .alive()
         .revoked(false)
         .supported()
         .for_certification()
-        .next()
-        .ok_or_else(|| Error::NoSecretKey(request.certifier.clone()))?;
+        .next();
 
-    let key = ka.key().clone();
-    let key = if key.secret().is_encrypted() {
-        let password = request
-            .password
-            .as_deref()
-            .filter(|p| !p.is_empty())
-            .ok_or_else(|| Error::invalid("this key is passphrase-protected"))?;
-        key.decrypt_secret(&password.into())?
-    } else {
-        key
+    let mut signer: Box<dyn sequoia_openpgp::crypto::Signer + Send + Sync> = match local {
+        Some(ka) => {
+            let key = ka.key().clone();
+            let key = if key.secret().is_encrypted() {
+                let password = request
+                    .password
+                    .as_deref()
+                    .filter(|p| !p.is_empty())
+                    .ok_or_else(|| Error::invalid("this key is passphrase-protected"))?;
+                key.decrypt_secret(&password.into())?
+            } else {
+                key
+            };
+            Box::new(key.into_keypair()?)
+        }
+        None => Box::new(crate::agent::certifier_for(&certifier)?),
     };
-    let mut signer = key.into_keypair()?;
 
     let mut signatures: Vec<Signature> = Vec::new();
     for wanted in &request.user_ids {
@@ -156,7 +164,7 @@ pub fn certify(store: &Store, request: &CertifyRequest) -> Result<Cert> {
         }
 
         signatures.push(builder.sign_userid_binding(
-            &mut signer,
+            &mut *signer,
             target.primary_key().key(),
             &userid,
         )?);

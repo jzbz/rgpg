@@ -923,8 +923,14 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
             let certifiers: Vec<(String, String)> = guard
                 .all
                 .iter()
-                .filter(|c| c.has_secret && c.can_certify)
-                .map(|c| (c.fingerprint.clone(), c.primary_user_id.clone()))
+                .filter(|c| c.can_certify && (c.has_secret || c.agent_backed))
+                .map(|c| {
+                    let label = match &c.card_serial {
+                        Some(_) => format!("{} (smartcard)", c.primary_user_id),
+                        None => c.primary_user_id.clone(),
+                    };
+                    (c.fingerprint.clone(), label)
+                })
                 .collect();
 
             guard.certify_target = Some(target.fingerprint.clone());

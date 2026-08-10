@@ -287,9 +287,18 @@ ignored because it is interactive, since the agent may raise a PIN prompt:
 RGPG_TEST_CERT=/path/to/cert.asc cargo test -p rgpg-core signs_through_the_agent -- --ignored --nocapture
 ```
 
-Still local-only: `certify` and `revoke` resolve secret keys from the secrets
-directory, so a card key cannot yet certify or revoke. Decryption on a card is
-also unwired — `ops::decrypt` looks only at stored secret keys.
+`certify` takes the same fallback, so a card key can certify — verified on the
+YubiKey.
+
+**Decryption on a card does not work yet.** The plumbing is there and the key is
+correctly identified: all three of the card's subkeys, encryption included,
+match the agent's keys by keygrip and report the right smartcard serial. The
+failure is in the PKESK decryption call itself, not in finding the key, and is
+most likely the card's separate decryption PIN. The `#[ignore]`d test
+`decrypts_and_certifies_through_the_agent` fails at that assertion on purpose,
+so the gap is not forgotten.
+
+`revoke` is still local-only.
 
 ## Where certificates live
 
