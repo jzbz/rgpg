@@ -111,7 +111,11 @@ struct Recipient {
 /// the scope and search filters. A row index from the UI refers to `shown`, so
 /// the two are only ever rebuilt together — see [`reload`] and [`apply_filter`].
 struct State {
-    store: Store,
+    /// Behind an `Arc` so a worker can clone it out under a brief lock and
+    /// then do its I/O — which may be a card PIN prompt lasting a minute —
+    /// without holding the mutex the UI needs. `Store` is `Send + Sync`, and
+    /// all its methods take `&self`.
+    store: Arc<Store>,
     all: Vec<CertSummary>,
     shown: Vec<CertSummary>,
     filter: String,
@@ -309,7 +313,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let state: Shared = Arc::new(Mutex::new(State {
-        store,
+        store: Arc::new(store),
         all: Vec::new(),
         shown: Vec::new(),
         filter: String::new(),
@@ -762,28 +766,37 @@ fn run_sign_encrypt(
     password: &str,
     secret: &str,
 ) -> Result<PathBuf, String> {
-    let guard = state.lock().unwrap();
-
-    let input = guard
-        .se_input
-        .clone()
-        .ok_or_else(|| "Choose a file first".to_string())?;
+    // Snapshot what is needed and release the lock: everything below is I/O,
+    // and a card PIN prompt can hold it for a minute while the UI waits.
+    let (store, input, signers, recipients) = {
+        let guard = state.lock().unwrap();
+        (
+            guard.store.clone(),
+            guard.se_input.clone(),
+            guard.se_signers.clone(),
+            guard
+                .se_recipients
+                .iter()
+                .filter(|r| r.selected)
+                .map(|r| (r.fingerprint.clone(), r.label.clone()))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let input = input.ok_or_else(|| "Choose a file first".to_string())?;
     let password = Some(password).filter(|p| !p.is_empty());
 
     // The signer is resolved from the *secret* store: cert-d only holds the
     // public half, which cannot produce a signature.
     let signer = if sign {
-        let (fingerprint, _) = guard
-            .se_signers
+        let (fingerprint, _) = signers
             .get(signer_index.max(0) as usize)
             .ok_or_else(|| "Choose a key to sign with".to_string())?;
         // Local secret if we have it; otherwise the public certificate, which
         // is all the agent needs — it finds the secret by keygrip.
         Some(
-            guard
-                .store
+            store
                 .secret_cert(fingerprint)
-                .or_else(|_| guard.store.lookup(fingerprint))
+                .or_else(|_| store.lookup(fingerprint))
                 .map_err(|e| format!("Signing key unavailable: {e}"))?,
         )
     } else {
@@ -791,13 +804,12 @@ fn run_sign_encrypt(
     };
 
     if encrypt {
-        let mut recipients = Vec::new();
-        for entry in guard.se_recipients.iter().filter(|r| r.selected) {
-            recipients.push(
-                guard
-                    .store
-                    .lookup(&entry.fingerprint)
-                    .map_err(|e| format!("Recipient {} unavailable: {e}", entry.label))?,
+        let mut certs = Vec::new();
+        for (fingerprint, label) in &recipients {
+            certs.push(
+                store
+                    .lookup(fingerprint)
+                    .map_err(|e| format!("Recipient {label} unavailable: {e}"))?,
             );
         }
         let passwords: Vec<String> = if secret.is_empty() {
@@ -805,13 +817,13 @@ fn run_sign_encrypt(
         } else {
             vec![secret.to_string()]
         };
-        if recipients.is_empty() && passwords.is_empty() {
+        if certs.is_empty() && passwords.is_empty() {
             return Err("Select a recipient, or set a password".to_string());
         }
 
         let output = ops::encrypted_name(&input);
         ops::encrypt_file(
-            &recipients,
+            &certs,
             &passwords,
             signer.as_ref().map(|cert| (cert, password)),
             &input,
@@ -996,20 +1008,23 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
 /// The blocking half of Decrypt / Verify. Returns a summary line, a tone for
 /// the result banner (1 good, 2 needs attention, 3 bad) and the signatures.
 fn run_decrypt_verify(state: &Shared, password: &str) -> Result<(String, i32, VerifyResult), String> {
-    let guard = state.lock().unwrap();
+    // Snapshot what is needed and release the lock: everything below is I/O,
+    // and a card PIN prompt can hold it for a minute while the UI waits.
+    let (store, input, kind, data) = {
+        let guard = state.lock().unwrap();
+        (
+            guard.store.clone(),
+            guard.dv_input.clone(),
+            guard.dv_kind,
+            guard.dv_data.clone(),
+        )
+    };
+    let input = input.ok_or_else(|| "Choose a file first".to_string())?;
 
-    let input = guard
-        .dv_input
-        .clone()
-        .ok_or_else(|| "Choose a file first".to_string())?;
+    if kind == InputKind::DetachedSignature {
+        let data = data.ok_or_else(|| "Choose the file the signature covers".to_string())?;
 
-    if guard.dv_kind == InputKind::DetachedSignature {
-        let data = guard
-            .dv_data
-            .clone()
-            .ok_or_else(|| "Choose the file the signature covers".to_string())?;
-
-        let result = ops::verify_detached_files(&guard.store, &input, &data)
+        let result = ops::verify_detached_files(&store, &input, &data)
             .map_err(|e| format!("Verification failed: {e}"))?;
 
         let summary = if result.signatures.is_empty() {
@@ -1024,7 +1039,7 @@ fn run_decrypt_verify(state: &Shared, password: &str) -> Result<(String, i32, Ve
 
     let output = ops::decrypted_name(&input);
     let result = ops::decrypt_file(
-        &guard.store,
+        &store,
         &input,
         Some(password).filter(|p| !p.is_empty()),
         &output,
@@ -1211,23 +1226,26 @@ fn run_certify(
     confidence: i32,
     password: &str,
 ) -> Result<usize, String> {
-    let guard = state.lock().unwrap();
-
-    let target = guard
-        .certify_target
-        .clone()
-        .ok_or_else(|| "No certificate selected".to_string())?;
-    let (certifier, _) = guard
-        .certify_certifiers
-        .get(certifier_index.max(0) as usize)
-        .ok_or_else(|| "Choose a key to certify with".to_string())?;
-
-    let user_ids: Vec<String> = guard
-        .certify_user_ids
-        .iter()
-        .filter(|(_, selected)| *selected)
-        .map(|(uid, _)| uid.clone())
-        .collect();
+    // Snapshot what is needed and release the lock: everything below is I/O,
+    // and a card PIN prompt can hold it for a minute while the UI waits.
+    let (store, target, certifier, user_ids) = {
+        let guard = state.lock().unwrap();
+        let target = guard
+            .certify_target
+            .clone()
+            .ok_or_else(|| "No certificate selected".to_string())?;
+        let (certifier, _) = guard
+            .certify_certifiers
+            .get(certifier_index.max(0) as usize)
+            .ok_or_else(|| "Choose a key to certify with".to_string())?;
+        let user_ids: Vec<String> = guard
+            .certify_user_ids
+            .iter()
+            .filter(|(_, selected)| *selected)
+            .map(|(uid, _)| uid.clone())
+            .collect();
+        (guard.store.clone(), target, certifier.clone(), user_ids)
+    };
     if user_ids.is_empty() {
         return Err("Select at least one user ID".to_string());
     }
@@ -1244,7 +1262,7 @@ fn run_certify(
     request.password = Some(password.to_string()).filter(|p| !p.is_empty());
 
     let count = request.user_ids.len();
-    certify::certify(&guard.store, &request).map_err(|e| format!("Certification failed: {e}"))?;
+    certify::certify(&store, &request).map_err(|e| format!("Certification failed: {e}"))?;
     Ok(count)
 }
 
@@ -1591,13 +1609,15 @@ fn run_lifecycle(
     value: &str,
     password: &str,
 ) -> Result<(String, String), String> {
-    let guard = state.lock().unwrap();
+    // Snapshot what is needed and release the lock: everything below is I/O,
+    // and a card PIN prompt can hold it for a minute while the UI waits.
+    let store = state.lock().unwrap().store.clone();
     let password = Some(password).filter(|p| !p.is_empty());
 
     match mode {
         0 => {
             let index: i32 = expiry.parse().unwrap_or(0);
-            lifecycle::set_expiry(&guard.store, fingerprint, expiry_from_index(index), password)
+            lifecycle::set_expiry(&store, fingerprint, expiry_from_index(index), password)
                 .map_err(|e| format!("Could not change the expiry: {e}"))?;
             Ok((
                 match expiry_from_index(index) {
@@ -1609,7 +1629,7 @@ fn run_lifecycle(
             ))
         }
         1 => {
-            lifecycle::add_user_id(&guard.store, fingerprint, value, password)
+            lifecycle::add_user_id(&store, fingerprint, value, password)
                 .map_err(|e| format!("Could not add the user ID: {e}"))?;
             Ok((
                 "User ID added. Publish the key again so others see it.".to_string(),
@@ -1617,7 +1637,7 @@ fn run_lifecycle(
             ))
         }
         2 => {
-            lifecycle::revoke_user_id(&guard.store, fingerprint, target, value, password)
+            lifecycle::revoke_user_id(&store, fingerprint, target, value, password)
                 .map_err(|e| format!("Could not revoke the user ID: {e}"))?;
             Ok((
                 "User ID revoked. Publish the key so others stop using it.".to_string(),
@@ -1625,7 +1645,7 @@ fn run_lifecycle(
             ))
         }
         4 => {
-            lifecycle::revoke_subkey(&guard.store, fingerprint, target, value, password)
+            lifecycle::revoke_subkey(&store, fingerprint, target, value, password)
                 .map_err(|e| format!("Could not revoke the subkey: {e}"))?;
             Ok((
                 "Subkey revoked. Publish the key so others stop using it.".to_string(),
@@ -1635,8 +1655,7 @@ fn run_lifecycle(
         _ => {
             // Publish. Only ever the public half — `keyserver::publish` strips
             // secret key material before it serialises anything.
-            let cert = guard
-                .store
+            let cert = store
                 .lookup(fingerprint)
                 .map_err(|e| format!("Certificate unavailable: {e}"))?;
             let published = rgpg_core::keyserver::publish(&cert)
@@ -2088,23 +2107,27 @@ fn run_revoke(
     message: &str,
     password: &str,
 ) -> Result<(String, String), String> {
-    let guard = state.lock().unwrap();
-
-    let target = guard
-        .revoke_target
-        .clone()
-        .ok_or_else(|| "No certificate selected".to_string())?;
+    // Snapshot what is needed and release the lock: everything below is I/O,
+    // and a card PIN prompt can hold it for a minute while the UI waits.
+    let (store, target, is_certification) = {
+        let guard = state.lock().unwrap();
+        (
+            guard.store.clone(),
+            guard.revoke_target.clone(),
+            guard.revoke_certification,
+        )
+    };
+    let target = target.ok_or_else(|| "No certificate selected".to_string())?;
     let reason = Reason::from_index(reason);
     let password = Some(password).filter(|p| !p.is_empty());
 
-    if guard.revoke_certification {
+    if is_certification {
         // Withdrawing our own endorsement: the certifier is whichever of our
         // keys actually made a certification on this certificate.
-        let cert = guard
-            .store
+        let cert = store
             .lookup(&target)
             .map_err(|e| format!("Certificate unavailable: {e}"))?;
-        let certifications = certify::certifications(&guard.store, &cert).unwrap_or_default();
+        let certifications = certify::certifications(&store, &cert).unwrap_or_default();
 
         let mine: Vec<&Certification> = certifications
             .iter()
@@ -2117,7 +2140,7 @@ fn run_revoke(
         let user_ids: Vec<String> = mine.iter().map(|c| c.user_id.clone()).collect();
 
         revoke::revoke_certification(
-            &guard.store,
+            &store,
             &certifier,
             &target,
             &user_ids,
@@ -2138,7 +2161,7 @@ fn run_revoke(
     request.message = message.to_string();
     request.password = password.map(str::to_owned);
 
-    revoke::revoke_cert(&guard.store, &request).map_err(|e| format!("Revocation failed: {e}"))?;
+    revoke::revoke_cert(&store, &request).map_err(|e| format!("Revocation failed: {e}"))?;
     Ok((
         target,
         "Key revoked. Publish or send the certificate so others stop using it.".to_string(),

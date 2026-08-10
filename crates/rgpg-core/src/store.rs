@@ -372,6 +372,12 @@ mod tests {
     }
 
     #[test]
+    fn store_is_shareable_across_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Store>();
+    }
+
+    #[test]
     fn round_trips_a_generated_key() {
         let (_dir, store) = scratch();
         assert!(store.certs().unwrap().is_empty());
