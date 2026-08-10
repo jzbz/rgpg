@@ -219,6 +219,37 @@ certificate can be marked one by hand from its details pane.
 The graph is rebuilt on every store reload rather than cached, which is fine
 for the sizes tested and will need revisiting for a keyring of thousands.
 
+## Revocation
+
+Revocation is one-way and public: the signature becomes part of the certificate,
+and anyone who already has a copy keeps it forever. Three separate things can be
+retracted, and the UI keeps them apart:
+
+- **Your own key**, from its details pane. Pick a reason and optionally leave a
+  note. Choosing *secret key may be compromised* makes it a **hard** revocation,
+  which also invalidates signatures the key made in the past — including every
+  certification it ever issued, so anyone it had authenticated drops back to
+  unverified.
+- **A certification you made**, without touching the other person's key. Only
+  your endorsement is withdrawn.
+- **Someone else's key**, by importing the revocation certificate they
+  published. The Import button takes it: a revocation is a bare signature rather
+  than a certificate, so it falls through `CertParser` to `apply_revocation_file`.
+
+A **revocation certificate** is now written at key generation, to
+`$XDG_DATA_HOME/rgpg/revocations/<fingerprint>.rev`, and can be exported from
+the details pane. It is the way back if the secret key or its passphrase is
+lost: applying it needs neither, because it was signed while the key was in
+hand. It cannot be recreated afterwards, which is why it is written once, at
+the only moment the key is certainly available.
+
+One timing wrinkle worth knowing. A revocation only supersedes a certification
+made *strictly earlier*, and OpenPGP timestamps have one-second granularity, so
+certifying and immediately changing your mind would otherwise leave the
+certification standing. `revoke_certification` dates the revocation one second
+past the certification it retracts — which means it takes effect a second
+later, and the status bar says so.
+
 ## Where certificates live
 
 Public certificates go in a [pgp-cert-d][certd] directory, the same layout `sq`
@@ -284,13 +315,11 @@ Roughly in the order Kleopatra users would notice them missing:
 - **Reading GnuPG's store directly** — see [Coming from GnuPG](#coming-from-gnupg).
 - **Certificate details beyond the summary pane** — subkey list, per-user-ID
   self-signatures.
-- **Revoking a certification** you previously made. Certifying is one-way in
-  the UI today.
+- **Revoking a single user ID or subkey.** Revocation today is all-or-nothing
+  on the certificate, plus withdrawing certifications.
 - **Clipboard and inline text** operations; today every operation is on a file.
 - **Column sorting.** The list sorts own-keys-first then by name, and the rail
   filters by scope, but there is no sort control.
-- **Revocation** — `keygen` produces a revocation certificate and currently
-  throws it away. It cannot be regenerated without the secret key.
 - **Keyserver and WKD lookup** — re-enable `sequoia-cert-store`'s `keyserver`
   feature, deliberately, with rustls rather than native-tls.
 - **Smartcard / YubiKey** (`sequoia-keystore-openpgp-card`).

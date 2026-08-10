@@ -36,6 +36,9 @@ pub struct Store {
     /// Fingerprints the user has explicitly designated as trust roots, one per
     /// line. Own keys are roots implicitly — see [`Store::effective_roots`].
     roots_path: PathBuf,
+    /// Revocation certificates made at key-generation time, kept against the
+    /// day the secret key or its passphrase is gone.
+    revocations_dir: PathBuf,
 }
 
 impl Store {
@@ -65,7 +68,27 @@ impl Store {
             certs: CertStore::open(cert_dir)?,
             secrets_dir: secrets_dir.to_path_buf(),
             roots_path: secrets_dir.with_file_name("trust-roots"),
+            revocations_dir: secrets_dir.with_file_name("revocations"),
         })
+    }
+
+    /// Where the revocation certificate for `fingerprint` lives.
+    pub fn revocation_path(&self, fingerprint: &str) -> PathBuf {
+        self.revocations_dir.join(format!("{fingerprint}.rev"))
+    }
+
+    pub fn has_revocation(&self, fingerprint: &str) -> bool {
+        self.revocation_path(fingerprint).exists()
+    }
+
+    /// Keep a revocation certificate. Written once, at key generation.
+    pub fn save_revocation(&self, fingerprint: &str, armored: &[u8]) -> Result<()> {
+        fs::create_dir_all(&self.revocations_dir).map_err(|e| {
+            Error::io(format!("creating {}", self.revocations_dir.display()), e)
+        })?;
+        let path = self.revocation_path(fingerprint);
+        fs::write(&path, armored)
+            .map_err(|e| Error::io(format!("writing {}", path.display()), e))
     }
 
     /// Fingerprints the user has explicitly marked as trust roots.

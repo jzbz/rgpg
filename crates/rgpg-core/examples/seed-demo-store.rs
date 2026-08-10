@@ -63,6 +63,11 @@ fn make(
 
     if keep_secret {
         store.insert_secret(&key.cert)?;
+        // Same as the GUI's key generation: keep the revocation certificate.
+        store.save_revocation(
+            &key.cert.fingerprint().to_hex(),
+            &rgpg_core::revoke::armor(&key.revocation)?,
+        )?;
     } else {
         store.insert(&key.cert)?;
     }

@@ -669,3 +669,90 @@ export component CertifyDialog inherits DialogShell {
         }
     }
 }
+
+export component RevokeDialog inherits DialogShell {
+    in property <string> target-name;
+    /// Withdrawing a certification rather than revoking a whole key.
+    in property <bool> certification;
+    in property <bool> busy;
+    callback run(int, string, string);
+
+    property <string> password;
+    property <string> message;
+    property <int> reason: 0;
+
+    title: root.certification ? "Withdraw certification" : "Revoke this key";
+    subtitle: root.certification
+        ? "Withdraw your certification of " + root.target-name
+            + ". Their key is unaffected — only your endorsement of it is retracted."
+        : "Revoke " + root.target-name
+            + ". This cannot be undone, and anyone who already has the key keeps the "
+            + "revocation forever. Publish it afterwards so others stop using the key.";
+    card-width: 500px;
+
+    VerticalLayout {
+        spacing: Theme.s4;
+
+        VerticalLayout {
+            spacing: 6px;
+            Text {
+                text: "Reason";
+                color: Theme.text-dim;
+                font-size: Theme.t-sm;
+            }
+            Select {
+                model: [
+                    "No reason given",
+                    "Replaced by a newer key",
+                    "Secret key may be compromised",
+                    "No longer used",
+                ];
+                enabled: !root.busy;
+                current: root.reason;
+                changed(index) => { root.reason = index; }
+            }
+            if root.reason == 2: Text {
+                text: "A compromise is a hard revocation: signatures this key made in the "
+                    + "past stop counting too.";
+                color: Theme.warn;
+                font-size: Theme.t-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        Field {
+            placeholder: "Note for whoever reads this later (optional)";
+            enabled: !root.busy;
+            edited(text) => { root.message = text; }
+        }
+
+        Field {
+            placeholder: "Passphrase for the key (if any)";
+            secret: true;
+            enabled: !root.busy;
+            edited(text) => { root.password = text; }
+        }
+
+        Divider { }
+
+        HorizontalLayout {
+            spacing: Theme.s2;
+            alignment: end;
+            Btn {
+                text: "Cancel";
+                variant: Variant.ghost;
+                enabled: !root.busy;
+                clicked => { root.dismissed(); }
+            }
+            Btn {
+                text: root.busy
+                    ? "Working…"
+                    : (root.certification ? "Withdraw certification" : "Revoke key");
+                glyph: Icons.revoke;
+                variant: Variant.danger;
+                enabled: !root.busy;
+                clicked => { root.run(root.reason, root.message, root.password); }
+            }
+        }
+    }
+}

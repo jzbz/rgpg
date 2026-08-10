@@ -9,6 +9,7 @@ pub mod certify;
 pub mod error;
 pub mod keygen;
 pub mod ops;
+pub mod revoke;
 pub mod store;
 pub mod wot;
 

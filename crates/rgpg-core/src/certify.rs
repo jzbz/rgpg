@@ -79,13 +79,15 @@ pub struct Certification {
     pub verified: Option<bool>,
     /// Made by a certificate whose secret key this store holds.
     pub by_me: bool,
+    /// This entry withdraws an earlier certification rather than making one.
+    pub is_revocation: bool,
 }
 
 impl Certification {
     /// Whether this certification should count towards trust: it verified, and
     /// it was made by someone we can name.
     pub fn is_good(&self) -> bool {
-        self.verified == Some(true)
+        self.verified == Some(true) && !self.is_revocation
     }
 }
 
@@ -173,9 +175,19 @@ pub fn certifications(store: &Store, cert: &Cert) -> Result<Vec<Certification>> 
     for ua in cert.userids() {
         let user_id = String::from_utf8_lossy(ua.userid().value()).into_owned();
 
-        for signature in ua.certifications() {
+        // `certifications()` holds third-party endorsements;
+        // `other_revocations()` holds the signatures that withdraw them. Both
+        // belong in the list — a withdrawal the user cannot see is a withdrawal
+        // they will make twice.
+        let entries = ua
+            .certifications()
+            .map(|signature| (signature, false))
+            .chain(ua.other_revocations().map(|signature| (signature, true)));
+
+        for (signature, is_revocation) in entries {
             let (depth, amount) = signature.trust_signature().unwrap_or((0, FULL));
             let mut entry = Certification {
+                is_revocation,
                 user_id: user_id.clone(),
                 certifier: String::new(),
                 certifier_fingerprint: None,
@@ -200,16 +212,18 @@ pub fn certifications(store: &Store, cert: &Cert) -> Result<Vec<Certification>> 
                 entry.certifier = CertSummary::from_cert(&certifier).primary_user_id;
                 entry.by_me = store.has_secret(&fingerprint);
                 entry.certifier_fingerprint = Some(fingerprint);
-                entry.verified = Some(
+                let certifier_key = certifier.primary_key().key();
+                entry.verified = Some(if is_revocation {
                     signature
                         .clone()
-                        .verify_userid_binding(
-                            certifier.primary_key().key(),
-                            primary,
-                            ua.userid(),
-                        )
-                        .is_ok(),
-                );
+                        .verify_userid_revocation(certifier_key, primary, ua.userid())
+                        .is_ok()
+                } else {
+                    signature
+                        .clone()
+                        .verify_userid_binding(certifier_key, primary, ua.userid())
+                        .is_ok()
+                });
                 break;
             }
 

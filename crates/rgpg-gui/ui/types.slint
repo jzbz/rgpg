@@ -24,6 +24,8 @@ export struct CertRow {
     // internally sound.
     authentication: string,
     is-trust-root: bool,
+    // Why the certificate was revoked; empty when it has not been.
+    revocation: string,
 }
 
 // One certification already on a certificate, flattened for display.
@@ -34,6 +36,8 @@ export struct CertificationRow {
     detail: string,
     good: bool,
     by-me: bool,
+    // This entry withdraws an earlier certification.
+    is-revocation: bool,
 }
 
 // A user ID offered for certification, with its tick state.

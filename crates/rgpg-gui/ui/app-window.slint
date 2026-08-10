@@ -4,7 +4,7 @@ import {
     Btn, Check, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Tone, Variant,
 } from "widgets.slint";
 import { CertRow, CertificationRow, RecipientRow, SignatureRow, UserIdRow } from "types.slint";
-import { CertifyDialog, DecryptVerifyDialog, KeygenDialog, SignEncryptDialog } from "dialogs.slint";
+import { CertifyDialog, DecryptVerifyDialog, KeygenDialog, RevokeDialog, SignEncryptDialog } from "dialogs.slint";
 
 export { CertRow, CertificationRow, RecipientRow, SignatureRow, UserIdRow }
 
@@ -227,6 +227,20 @@ export component AppWindow inherits Window {
     callback certify-toggle-user-id(int);
     callback certify-run(int, bool, bool, int, string);
     callback toggle-trust-root();
+
+    // --- Revocation -------------------------------------------------------
+    in-out property <bool> revoke-open: false;
+    /// The open dialog withdraws a certification rather than revoking a key.
+    in property <bool> revoke-is-certification: false;
+    in property <string> revoke-target: "";
+    /// A revocation certificate for the selected key is on disk.
+    in property <bool> has-revocation-cert: false;
+    /// We have certified this certificate and could withdraw that.
+    in property <bool> can-withdraw: false;
+    callback open-revoke();
+    callback open-withdraw();
+    callback revoke-run(int, string, string);
+    callback save-revocation-cert();
 
     VerticalLayout {
         spacing: 0px;
@@ -534,6 +548,30 @@ export component AppWindow inherits Window {
                             }
                         }
 
+                        if root.detail.revocation != "": Rectangle {
+                            background: Theme.danger-soft;
+                            border-radius: Theme.r-md;
+                            // Without this the rectangle takes one line's
+                            // height and clips the wrapped reason.
+                            height: banner.preferred-height;
+                            banner := HorizontalLayout {
+                                padding: Theme.s3;
+                                spacing: Theme.s2;
+                                Icon {
+                                    glyph: Icons.revoke;
+                                    tint: Theme.danger;
+                                    y: 1px;
+                                }
+                                Text {
+                                    text: root.detail.revocation;
+                                    color: Theme.danger;
+                                    font-size: Theme.t-sm;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+
                         Divider { }
 
                         SectionLabel { text: "CERTIFICATE"; }
@@ -604,8 +642,10 @@ export component AppWindow inherits Window {
                             alignment: start;
 
                             Icon {
-                                glyph: entry.good ? Icons.certify : Icons.cross;
-                                tint: entry.good ? Theme.ok : Theme.text-faint;
+                                glyph: entry.is-revocation ? Icons.revoke
+                                    : (entry.good ? Icons.certify : Icons.cross);
+                                tint: entry.is-revocation ? Theme.danger
+                                    : (entry.good ? Theme.ok : Theme.text-faint);
                                 width: 14px;
                                 height: 14px;
                                 y: 2px;
@@ -641,6 +681,33 @@ export component AppWindow inherits Window {
                                 wide: true;
                                 enabled: !root.busy && root.can-certify && !root.detail.has-secret;
                                 clicked => { root.open-certify(); }
+                            }
+
+                            if root.can-withdraw: Btn {
+                                text: "Withdraw my certification…";
+                                glyph: Icons.revoke;
+                                variant: Variant.ghost;
+                                wide: true;
+                                enabled: !root.busy;
+                                clicked => { root.open-withdraw(); }
+                            }
+
+                            if root.has-revocation-cert: Btn {
+                                text: "Save revocation certificate…";
+                                glyph: Icons.arrow-out;
+                                variant: Variant.ghost;
+                                wide: true;
+                                enabled: !root.busy;
+                                clicked => { root.save-revocation-cert(); }
+                            }
+
+                            if root.detail.has-secret && root.detail.revocation == "": Btn {
+                                text: "Revoke this key…";
+                                glyph: Icons.revoke;
+                                variant: Variant.danger;
+                                wide: true;
+                                enabled: !root.busy;
+                                clicked => { root.open-revoke(); }
                             }
 
                             HorizontalLayout {
@@ -739,6 +806,14 @@ export component AppWindow inherits Window {
         run(certifier, publishable, introducer, confidence, password) => {
             root.certify-run(certifier, publishable, introducer, confidence, password);
         }
+    }
+
+    if root.revoke-open: RevokeDialog {
+        busy: root.busy;
+        target-name: root.revoke-target;
+        certification: root.revoke-is-certification;
+        dismissed => { root.revoke-open = false; }
+        run(reason, message, password) => { root.revoke-run(reason, message, password); }
     }
 
     if root.verify-open: DecryptVerifyDialog {

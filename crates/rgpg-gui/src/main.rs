@@ -12,6 +12,7 @@ use rgpg_core::cert::format_time;
 use rgpg_core::certify::{self, Certification, CertifyRequest};
 use rgpg_core::keygen::{self, KeyGenRequest, KeyType};
 use rgpg_core::ops::{self, InputKind, VerifyResult};
+use rgpg_core::revoke::{self, Reason, RevokeRequest};
 use rgpg_core::{CertSummary, Store, wot};
 use slint::{ModelRc, SharedString, VecModel};
 
@@ -81,6 +82,11 @@ struct State {
     certify_user_ids: Vec<(String, bool)>,
     /// (fingerprint, label) of our own certification-capable keys.
     certify_certifiers: Vec<(String, String)>,
+
+    /// Fingerprint the revoke dialog is about, and whether it is withdrawing a
+    /// certification rather than revoking the key itself.
+    revoke_target: Option<String>,
+    revoke_certification: bool,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -256,6 +262,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         certify_target: None,
         certify_user_ids: Vec::new(),
         certify_certifiers: Vec::new(),
+        revoke_target: None,
+        revoke_certification: false,
     }));
 
     reload(&ui, &state);
@@ -264,6 +272,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     wire_sign_encrypt(&ui, &state);
     wire_decrypt_verify(&ui, &state);
     wire_certify(&ui, &state);
+    wire_revoke(&ui, &state);
 
     ui.run()?;
     Ok(())
@@ -337,11 +346,28 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
                     return;
                 };
                 let ui = ui_weak.unwrap();
-                let outcome = state.lock().unwrap().store.import_file(file.path());
+                // A revocation certificate is a bare signature, not a
+                // certificate, so CertParser rejects it. Same button, because a
+                // user handed a .rev file expects Import to take it.
+                let outcome = {
+                    let guard = state.lock().unwrap();
+                    match guard.store.import_file(file.path()) {
+                        Ok(certs) => Ok(format!("Imported {} certificate(s)", certs.len())),
+                        Err(import_error) => {
+                            match revoke::apply_revocation_file(&guard.store, file.path()) {
+                                Ok(cert) => Ok(format!(
+                                    "Revoked {}",
+                                    rgpg_core::CertSummary::from_cert(&cert).primary_user_id
+                                )),
+                                Err(_) => Err(import_error),
+                            }
+                        }
+                    }
+                };
                 match outcome {
-                    Ok(certs) => {
+                    Ok(message) => {
                         reload(&ui, &state);
-                        ui.set_status(format!("Imported {} certificate(s)", certs.len()).into());
+                        ui.set_status(message.into());
                     }
                     Err(e) => ui.set_status(format!("Import failed: {e}").into()),
                 }
@@ -418,8 +444,16 @@ fn wire_keygen(ui: &AppWindow, state: &Shared) {
                     let ui = ui_weak.unwrap();
                     ui.set_busy(false);
                     match generated.and_then(|key| {
-                        state.lock().unwrap().store.insert_secret(&key.cert)?;
-                        Ok(key.cert.fingerprint().to_hex())
+                        let guard = state.lock().unwrap();
+                        guard.store.insert_secret(&key.cert)?;
+                        // Written once, now: a revocation certificate cannot be
+                        // recreated later without the secret key, and this is
+                        // the only moment we are certain to have it unlocked.
+                        let fingerprint = key.cert.fingerprint().to_hex();
+                        guard
+                            .store
+                            .save_revocation(&fingerprint, &revoke::armor(&key.revocation)?)?;
+                        Ok(fingerprint)
                     }) {
                         Ok(fingerprint) => {
                             ui.set_keygen_open(false);
@@ -1045,15 +1079,29 @@ fn push_certify(ui: &AppWindow, state: &State) {
 
 /// Load and display the certifications on one certificate.
 fn push_certifications(ui: &AppWindow, state: &State, summary: &CertSummary) {
-    let rows = match state.store.lookup(&summary.fingerprint) {
-        Ok(cert) => certify::certifications(&state.store, &cert)
-            .unwrap_or_default()
-            .iter()
-            .map(|c| certification_row(c, summary.user_ids.len() > 1))
-            .collect(),
+    let certifications = match state.store.lookup(&summary.fingerprint) {
+        Ok(cert) => certify::certifications(&state.store, &cert).unwrap_or_default(),
         Err(_) => Vec::new(),
     };
+
+    // Offer to withdraw only what is actually still standing.
+    let withdrawable = certifications
+        .iter()
+        .any(|c| c.by_me && !c.is_revocation)
+        && !certifications
+            .iter()
+            .any(|c| c.by_me && c.is_revocation);
+
+    let rows: Vec<CertificationRow> = certifications
+        .iter()
+        .map(|c| certification_row(c, summary.user_ids.len() > 1))
+        .collect();
+
     ui.set_detail_certifications(ModelRc::new(VecModel::from(rows)));
+    ui.set_can_withdraw(withdrawable);
+    ui.set_has_revocation_cert(
+        summary.has_secret && state.store.has_revocation(&summary.fingerprint),
+    );
 }
 
 fn certification_row(certification: &Certification, show_user_id: bool) -> CertificationRow {
@@ -1062,14 +1110,18 @@ fn certification_row(certification: &Certification, show_user_id: bool) -> Certi
     if show_user_id {
         parts.push(certification.user_id.clone());
     }
-    parts.push(
-        if certification.amount >= certify::FULL {
-            "full"
-        } else {
-            "partial"
-        }
-        .to_string(),
-    );
+    if certification.is_revocation {
+        parts.push("withdrawn".to_string());
+    } else {
+        parts.push(
+            if certification.amount >= certify::FULL {
+                "full"
+            } else {
+                "partial"
+            }
+            .to_string(),
+        );
+    }
     parts.push(
         if certification.exportable {
             "publishable"
@@ -1096,6 +1148,7 @@ fn certification_row(certification: &Certification, show_user_id: bool) -> Certi
         detail: parts.join(" · ").into(),
         good: certification.is_good(),
         by_me: certification.by_me,
+        is_revocation: certification.is_revocation,
     }
 }
 
@@ -1115,6 +1168,178 @@ fn reselect(ui: &AppWindow, state: &Shared, fingerprint: &str) {
     ui.set_detail(to_row(&summary));
     ui.set_has_selection(true);
     push_certifications(ui, &guard, &summary);
+}
+
+// ----------------------------------------------------------------- revocation
+
+fn wire_revoke(ui: &AppWindow, state: &Shared) {
+    ui.on_open_revoke({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let ui = ui_weak.unwrap();
+            open_revoke_dialog(&ui, &state, false);
+        }
+    });
+
+    ui.on_open_withdraw({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let ui = ui_weak.unwrap();
+            open_revoke_dialog(&ui, &state, true);
+        }
+    });
+
+    ui.on_revoke_run({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |reason, message, password| {
+            let ui = ui_weak.unwrap();
+            ui.set_busy(true);
+            ui.set_status("Revoking…".into());
+
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let (message, password) = (message.to_string(), password.to_string());
+            std::thread::spawn(move || {
+                let outcome = run_revoke(&state, reason, &message, &password);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let ui = ui_weak.unwrap();
+                    ui.set_busy(false);
+                    match outcome {
+                        Ok((fingerprint, message)) => {
+                            ui.set_revoke_open(false);
+                            reload(&ui, &state);
+                            reselect(&ui, &state, &fingerprint);
+                            ui.set_status(message.into());
+                        }
+                        Err(message) => ui.set_status(message.into()),
+                    }
+                });
+            });
+        }
+    });
+
+    ui.on_save_revocation_cert({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let _ = slint::spawn_local(async move {
+                let (source, suggested) = {
+                    let ui = ui_weak.unwrap();
+                    let fingerprint = ui.get_detail().fingerprint.to_string();
+                    let guard = state.lock().unwrap();
+                    (
+                        guard.store.revocation_path(&fingerprint),
+                        format!("{}-revocation.asc", ui.get_detail().key_id),
+                    )
+                };
+
+                let Some(file) = rfd::AsyncFileDialog::new()
+                    .set_title("Save revocation certificate")
+                    .set_file_name(&suggested)
+                    .save_file()
+                    .await
+                else {
+                    return;
+                };
+
+                let ui = ui_weak.unwrap();
+                ui.set_status(
+                    match std::fs::copy(&source, file.path()) {
+                        Ok(_) => format!(
+                            "Saved to {}. Keep it somewhere you can reach without this key.",
+                            file.path().display()
+                        ),
+                        Err(e) => format!("Could not save the revocation certificate: {e}"),
+                    }
+                    .into(),
+                );
+            });
+        }
+    });
+}
+
+fn open_revoke_dialog(ui: &AppWindow, state: &Shared, certification: bool) {
+    let mut guard = state.lock().unwrap();
+
+    let Some(target) = usize::try_from(ui.get_current_row())
+        .ok()
+        .and_then(|r| guard.shown.get(r))
+        .cloned()
+    else {
+        return;
+    };
+
+    guard.revoke_target = Some(target.fingerprint.clone());
+    guard.revoke_certification = certification;
+    drop(guard);
+
+    ui.set_revoke_target(target.primary_user_id.into());
+    ui.set_revoke_is_certification(certification);
+    ui.set_revoke_open(true);
+}
+
+/// The blocking half of revocation. Returns the affected fingerprint so the
+/// list can re-select it, and the line to show in the status bar.
+fn run_revoke(
+    state: &Shared,
+    reason: i32,
+    message: &str,
+    password: &str,
+) -> Result<(String, String), String> {
+    let guard = state.lock().unwrap();
+
+    let target = guard
+        .revoke_target
+        .clone()
+        .ok_or_else(|| "No certificate selected".to_string())?;
+    let reason = Reason::from_index(reason);
+    let password = Some(password).filter(|p| !p.is_empty());
+
+    if guard.revoke_certification {
+        // Withdrawing our own endorsement: the certifier is whichever of our
+        // keys actually made a certification on this certificate.
+        let cert = guard
+            .store
+            .lookup(&target)
+            .map_err(|e| format!("Certificate unavailable: {e}"))?;
+        let certifications = certify::certifications(&guard.store, &cert).unwrap_or_default();
+
+        let mine: Vec<&Certification> = certifications
+            .iter()
+            .filter(|c| c.by_me && !c.is_revocation)
+            .collect();
+        let certifier = mine
+            .first()
+            .and_then(|c| c.certifier_fingerprint.clone())
+            .ok_or_else(|| "You have not certified this key".to_string())?;
+        let user_ids: Vec<String> = mine.iter().map(|c| c.user_id.clone()).collect();
+
+        revoke::revoke_certification(
+            &guard.store,
+            &certifier,
+            &target,
+            &user_ids,
+            reason,
+            message,
+            password,
+        )
+        .map_err(|e| format!("Could not withdraw the certification: {e}"))?;
+
+        return Ok((
+            target,
+            "Certification withdrawn. It stops counting a second from now.".to_string(),
+        ));
+    }
+
+    let mut request = RevokeRequest::new(&target);
+    request.reason = reason;
+    request.message = message.to_string();
+    request.password = password.map(str::to_owned);
+
+    revoke::revoke_cert(&guard.store, &request).map_err(|e| format!("Revocation failed: {e}"))?;
+    Ok((
+        target,
+        "Key revoked. Publish or send the certificate so others stop using it.".to_string(),
+    ))
 }
 
 // ------------------------------------------------------------------- plumbing
@@ -1229,6 +1454,7 @@ fn to_row(summary: &CertSummary) -> CertRow {
         has_secret: summary.has_secret,
         authentication: summary.authentication.as_str().into(),
         is_trust_root: summary.is_trust_root,
+        revocation: summary.revocation.clone().unwrap_or_default().into(),
     }
 }
 

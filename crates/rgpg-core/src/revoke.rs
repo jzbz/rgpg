@@ -1,0 +1,473 @@
+//! Revocation: retracting a certificate, or retracting a certification you
+//! previously made.
+//!
+//! Revocation in OpenPGP is one-way and public. There is no un-revoke: the
+//! revocation signature becomes part of the certificate and anyone who has the
+//! certificate keeps it forever. Everything in this module is therefore
+//! deliberately explicit about which of the two things is being retracted.
+
+use std::path::Path;
+use std::time::{Duration, SystemTime};
+
+use sequoia_openpgp::cert::CertRevocationBuilder;
+use sequoia_openpgp::packet::Signature;
+use sequoia_openpgp::packet::signature::SignatureBuilder;
+use sequoia_openpgp::parse::Parse;
+use sequoia_openpgp::serialize::Serialize;
+use sequoia_openpgp::types::{ReasonForRevocation, RevocationStatus, SignatureType};
+use sequoia_openpgp::{Cert, Packet, PacketPile};
+
+use crate::error::{Error, Result};
+use crate::policy;
+use crate::store::Store;
+
+/// Why something is being revoked.
+///
+/// OpenPGP's list is longer, but the extra codes are either user-ID specific or
+/// private, and offering a user a choice they cannot evaluate is worse than
+/// offering four they can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reason {
+    #[default]
+    Unspecified,
+    /// A replacement key has been issued.
+    Superseded,
+    /// The secret key may be in someone else's hands. This is a *hard*
+    /// revocation: it invalidates signatures made in the past as well, because
+    /// there is no way to know which of them were really yours.
+    Compromised,
+    /// The key is simply out of service.
+    Retired,
+}
+
+impl Reason {
+    pub const ALL: [Reason; 4] = [
+        Reason::Unspecified,
+        Reason::Superseded,
+        Reason::Compromised,
+        Reason::Retired,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Reason::Unspecified => "No reason given",
+            Reason::Superseded => "Replaced by a newer key",
+            Reason::Compromised => "Secret key may be compromised",
+            Reason::Retired => "No longer used",
+        }
+    }
+
+    /// A hard revocation also invalidates past signatures.
+    pub fn is_hard(self) -> bool {
+        matches!(self, Reason::Compromised)
+    }
+
+    pub fn from_index(index: i32) -> Self {
+        Reason::ALL
+            .get(index.max(0) as usize)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn to_openpgp(self) -> ReasonForRevocation {
+        match self {
+            Reason::Unspecified => ReasonForRevocation::Unspecified,
+            Reason::Superseded => ReasonForRevocation::KeySuperseded,
+            Reason::Compromised => ReasonForRevocation::KeyCompromised,
+            Reason::Retired => ReasonForRevocation::KeyRetired,
+        }
+    }
+
+    fn from_openpgp(reason: ReasonForRevocation) -> Self {
+        match reason {
+            ReasonForRevocation::KeySuperseded => Reason::Superseded,
+            ReasonForRevocation::KeyCompromised => Reason::Compromised,
+            ReasonForRevocation::KeyRetired => Reason::Retired,
+            _ => Reason::Unspecified,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RevokeRequest {
+    pub fingerprint: String,
+    pub reason: Reason,
+    /// Free text stored in the revocation for whoever reads it later.
+    pub message: String,
+    pub password: Option<String>,
+}
+
+impl RevokeRequest {
+    pub fn new(fingerprint: impl Into<String>) -> Self {
+        RevokeRequest {
+            fingerprint: fingerprint.into(),
+            reason: Reason::default(),
+            message: String::new(),
+            password: None,
+        }
+    }
+}
+
+/// Revoke one of our own certificates, and store the result.
+pub fn revoke_cert(store: &Store, request: &RevokeRequest) -> Result<Cert> {
+    let cert = store.secret_cert(&request.fingerprint)?;
+    let mut signer = primary_signer(&cert, request.password.as_deref())?;
+
+    let signature = CertRevocationBuilder::new()
+        .set_reason_for_revocation(request.reason.to_openpgp(), request.message.as_bytes())?
+        .build(&mut signer, &cert, None)?;
+
+    apply(store, cert, signature)
+}
+
+/// Retract certifications we previously made over `target`'s user IDs.
+///
+/// This does not touch the target's own self-signatures; it only withdraws our
+/// opinion of them.
+pub fn revoke_certification(
+    store: &Store,
+    certifier: &str,
+    target: &str,
+    user_ids: &[String],
+    reason: Reason,
+    message: &str,
+    password: Option<&str>,
+) -> Result<Cert> {
+    if user_ids.is_empty() {
+        return Err(Error::invalid("select at least one user ID"));
+    }
+
+    let certifier = store.secret_cert(certifier)?;
+    let target = store.lookup(target)?;
+    let mut signer = certification_signer(&certifier, password)?;
+
+    let mut signatures = Vec::new();
+    for wanted in user_ids {
+        let amalgamation = target
+            .userids()
+            .find(|ua| String::from_utf8_lossy(ua.userid().value()) == wanted.as_str())
+            .ok_or_else(|| Error::invalid(format!("{wanted} is not a user ID on this key")))?;
+        let userid = amalgamation.userid().clone();
+
+        // A revocation only supersedes a certification made strictly earlier.
+        // Certifying and then changing your mind within the same second — which
+        // is a normal thing for a person clicking two buttons to do — would
+        // otherwise leave the certification standing. Date the revocation one
+        // second past the newest certification it retracts.
+        // Signature timestamps have one-second granularity, so this compares
+        // `created + 1s` rather than `created`: a certification made 400ms ago
+        // is stamped with the same second as `now`, and a naive `created > now`
+        // test would never fire.
+        let mut when = SystemTime::now();
+        for existing in amalgamation.certifications() {
+            if let Some(created) = existing.signature_creation_time() {
+                let after = created + Duration::from_secs(1);
+                if after > when {
+                    when = after;
+                }
+            }
+        }
+
+        signatures.push(
+            SignatureBuilder::new(SignatureType::CertificationRevocation)
+                .set_signature_creation_time(when)?
+                .set_reason_for_revocation(reason.to_openpgp(), message.as_bytes())?
+                .sign_userid_binding(&mut signer, target.primary_key().key(), &userid)?,
+        );
+    }
+
+    let revoked = target.insert_packets(signatures)?.0;
+    store.insert(&revoked)?;
+    Ok(revoked)
+}
+
+/// Armor a revocation signature for storage or publication.
+///
+/// Armored as a public key block rather than as a signature, because that is
+/// what GnuPG writes for a revocation certificate and what other tools expect
+/// to be handed. The payload is still a bare signature packet.
+pub fn armor(signature: &Signature) -> Result<Vec<u8>> {
+    let mut writer = sequoia_openpgp::armor::Writer::new(
+        Vec::new(),
+        sequoia_openpgp::armor::Kind::PublicKey,
+    )?;
+    Packet::from(signature.clone()).serialize(&mut writer)?;
+    Ok(writer.finalize()?)
+}
+
+/// Read a revocation certificate from disk and apply it to the certificate it
+/// names.
+///
+/// This is the emergency path: it needs no secret key and no passphrase,
+/// because the signature was made when the revocation certificate was created.
+pub fn apply_revocation_file(store: &Store, path: &Path) -> Result<Cert> {
+    let pile = PacketPile::from_file(path)
+        .map_err(|_| Error::invalid(format!("{} is not an OpenPGP file", path.display())))?;
+
+    let signatures: Vec<Signature> = pile
+        .into_children()
+        .filter_map(|packet| match packet {
+            Packet::Signature(signature) => Some(signature),
+            _ => None,
+        })
+        .collect();
+
+    if signatures.is_empty() {
+        return Err(Error::invalid(format!(
+            "{} contains no revocation signature",
+            path.display()
+        )));
+    }
+
+    // A revocation names its target through the issuer subpackets.
+    for signature in &signatures {
+        for handle in signature.get_issuers() {
+            let Ok(cert) = store.lookup(&handle.to_string()) else {
+                continue;
+            };
+            return apply(store, cert, signature.clone());
+        }
+    }
+
+    Err(Error::invalid(
+        "the revocation is for a certificate that is not in this store",
+    ))
+}
+
+/// Merge `signature` into `cert`, confirm it really did revoke it, and store.
+fn apply(store: &Store, cert: Cert, signature: Signature) -> Result<Cert> {
+    let fingerprint = cert.fingerprint().to_hex();
+    let revoked = cert.insert_packets(signature.clone())?.0;
+
+    // Guard against silently storing a signature that changed nothing — a
+    // revocation from the wrong key, or one the policy rejects.
+    if !matches!(
+        revoked.revocation_status(&policy(), None),
+        RevocationStatus::Revoked(_)
+    ) {
+        return Err(Error::invalid(format!(
+            "that signature does not revoke {fingerprint}"
+        )));
+    }
+
+    store.insert(&revoked)?;
+
+    // Keep the secret copy in step, so the revocation survives a reload. The
+    // signature has to be merged into the *secret* certificate: `revoked` may
+    // have come from cert-d, which only ever holds the public half.
+    if store.has_secret(&fingerprint) {
+        let secret = store.secret_cert(&fingerprint)?;
+        store.insert_secret(&secret.insert_packets(signature)?.0)?;
+    }
+    Ok(revoked)
+}
+
+/// Why a certificate was revoked, if it was.
+pub fn revocation_reason(cert: &Cert) -> Option<(Reason, String)> {
+    let RevocationStatus::Revoked(signatures) = cert.revocation_status(&policy(), None) else {
+        return None;
+    };
+
+    let signature = signatures.first()?;
+    let (code, message) = signature.reason_for_revocation()?;
+    Some((
+        Reason::from_openpgp(code),
+        String::from_utf8_lossy(message).into_owned(),
+    ))
+}
+
+fn primary_signer(
+    cert: &Cert,
+    password: Option<&str>,
+) -> Result<sequoia_openpgp::crypto::KeyPair> {
+    let key = cert
+        .primary_key()
+        .key()
+        .clone()
+        .parts_into_secret()
+        .map_err(|_| Error::NoSecretKey(cert.fingerprint().to_hex()))?
+        // `unlock` is shared with the certification path, which deals in
+        // subkeys; the primary key has to shed its role to match.
+        .role_into_unspecified();
+    unlock(key, password, cert)
+}
+
+fn certification_signer(
+    cert: &Cert,
+    password: Option<&str>,
+) -> Result<sequoia_openpgp::crypto::KeyPair> {
+    let policy = policy();
+    let valid = cert
+        .with_policy(&policy, None)
+        .map_err(|_| Error::NoSecretKey(cert.fingerprint().to_hex()))?;
+    let ka = valid
+        .keys()
+        .secret()
+        .alive()
+        .revoked(false)
+        .supported()
+        .for_certification()
+        .next()
+        .ok_or_else(|| Error::NoSecretKey(cert.fingerprint().to_hex()))?;
+    unlock(ka.key().clone(), password, cert)
+}
+
+fn unlock(
+    key: sequoia_openpgp::packet::Key<
+        sequoia_openpgp::packet::key::SecretParts,
+        sequoia_openpgp::packet::key::UnspecifiedRole,
+    >,
+    password: Option<&str>,
+    cert: &Cert,
+) -> Result<sequoia_openpgp::crypto::KeyPair> {
+    let _ = cert;
+    let key = if key.secret().is_encrypted() {
+        let password = password
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| Error::invalid("this key is passphrase-protected"))?;
+        key.decrypt_secret(&password.into())?
+    } else {
+        key
+    };
+    Ok(key.into_keypair()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cert::Validity;
+    use crate::certify::{CertifyRequest, certify};
+    use crate::keygen::{KeyGenRequest, generate};
+    use crate::{CertSummary, wot};
+
+    fn scratch() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("certs.d"), dir.path().join("secrets")).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn revokes_our_own_certificate_with_a_reason() {
+        let (_dir, store) = scratch();
+        let mine = generate(&KeyGenRequest::new("Me <me@example.org>")).unwrap().cert;
+        store.insert_secret(&mine).unwrap();
+        let fingerprint = mine.fingerprint().to_hex();
+
+        assert_eq!(CertSummary::from_cert(&mine).validity, Validity::Valid);
+        assert!(revocation_reason(&mine).is_none());
+
+        let mut request = RevokeRequest::new(&fingerprint);
+        request.reason = Reason::Compromised;
+        request.message = "laptop stolen".to_string();
+        let revoked = revoke_cert(&store, &request).unwrap();
+
+        assert_eq!(CertSummary::from_cert(&revoked).validity, Validity::Revoked);
+        let (reason, message) = revocation_reason(&revoked).unwrap();
+        assert_eq!(reason, Reason::Compromised);
+        assert!(reason.is_hard());
+        assert_eq!(message, "laptop stolen");
+
+        // Both halves of the store must agree, or a reload would resurrect it.
+        assert_eq!(
+            CertSummary::from_cert(&store.lookup(&fingerprint).unwrap()).validity,
+            Validity::Revoked
+        );
+        assert_eq!(
+            CertSummary::from_cert(&store.secret_cert(&fingerprint).unwrap()).validity,
+            Validity::Revoked
+        );
+    }
+
+    #[test]
+    fn an_emergency_revocation_certificate_works_without_the_passphrase() {
+        let (_dir, store) = scratch();
+        let mut request = KeyGenRequest::new("Me <me@example.org>");
+        request.password = Some("correct horse".to_string());
+        let generated = generate(&request).unwrap();
+        store.insert_secret(&generated.cert).unwrap();
+
+        let fingerprint = generated.cert.fingerprint().to_hex();
+        let armored = armor(&generated.revocation).unwrap();
+        store.save_revocation(&fingerprint, &armored).unwrap();
+        assert!(store.has_revocation(&fingerprint));
+        assert!(armored.starts_with(b"-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+
+        // Revoking normally would need the passphrase; the stored certificate
+        // was signed at generation time and needs nothing.
+        let path = store.revocation_path(&fingerprint);
+        let revoked = apply_revocation_file(&store, &path).unwrap();
+        assert_eq!(CertSummary::from_cert(&revoked).validity, Validity::Revoked);
+    }
+
+    #[test]
+    fn revoking_a_certification_withdraws_authentication() {
+        let (_dir, store) = scratch();
+        let me = generate(&KeyGenRequest::new("Me <me@example.org>")).unwrap().cert;
+        let them = generate(&KeyGenRequest::new("Them <them@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&me).unwrap();
+        store.insert(&them).unwrap();
+
+        let mut request = CertifyRequest::new(me.fingerprint().to_hex(), them.fingerprint().to_hex());
+        request.user_ids = vec!["Them <them@example.org>".to_string()];
+        certify(&store, &request).unwrap();
+
+        let authenticated = |store: &Store| {
+            let certs = store.certs().unwrap();
+            let roots: Vec<String> = store.effective_roots().unwrap().into_iter().collect();
+            wot::authenticate_all(&certs, &roots)
+                .get(&them.fingerprint().to_hex().to_uppercase())
+                .copied()
+                .unwrap_or_default()
+        };
+        assert_eq!(authenticated(&store), crate::Authentication::Full);
+
+        // The revocation is dated one second past the certification it
+        // retracts, so it only takes effect once that second has passed. This
+        // sleep is the semantics, not a flake: see `revoke_certification`.
+        std::thread::sleep(std::time::Duration::from_millis(1300));
+
+        revoke_certification(
+            &store,
+            &me.fingerprint().to_hex(),
+            &them.fingerprint().to_hex(),
+            &["Them <them@example.org>".to_string()],
+            Reason::Superseded,
+            "checked the wrong fingerprint",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(authenticated(&store), crate::Authentication::Unknown);
+        // The target itself is untouched: only our opinion was withdrawn.
+        assert_eq!(
+            CertSummary::from_cert(&store.lookup(&them.fingerprint().to_hex()).unwrap()).validity,
+            Validity::Valid
+        );
+    }
+
+    #[test]
+    fn refuses_a_revocation_for_someone_else() {
+        let (dir, store) = scratch();
+        let mine = generate(&KeyGenRequest::new("Me <me@example.org>")).unwrap().cert;
+        let other = generate(&KeyGenRequest::new("Other <other@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&mine).unwrap();
+        store.insert(&other).unwrap();
+
+        // Write Other's revocation certificate, but hand it to the store while
+        // only Mine is a plausible target.
+        let generated = generate(&KeyGenRequest::new("Stranger <s@example.org>")).unwrap();
+        let path = dir.path().join("stranger.rev");
+        std::fs::write(&path, armor(&generated.revocation).unwrap()).unwrap();
+        let _ = other;
+
+        assert!(apply_revocation_file(&store, &path).is_err());
+        assert_eq!(
+            CertSummary::from_cert(&store.lookup(&mine.fingerprint().to_hex()).unwrap()).validity,
+            Validity::Valid
+        );
+    }
+}

@@ -53,6 +53,8 @@ pub struct CertSummary {
     pub authentication: crate::Authentication,
     /// Whether the user has designated this certificate a trust root.
     pub is_trust_root: bool,
+    /// Why the certificate was revoked, when it has been.
+    pub revocation: Option<String>,
 }
 
 impl CertSummary {
@@ -141,6 +143,7 @@ impl CertSummary {
             has_secret,
             authentication: crate::Authentication::Unknown,
             is_trust_root: false,
+            revocation: revoked.then(|| describe_revocation(cert)).flatten(),
         }
     }
 
@@ -186,6 +189,15 @@ impl CertSummary {
                 .iter()
                 .any(|u| u.to_lowercase().contains(needle))
     }
+}
+
+fn describe_revocation(cert: &Cert) -> Option<String> {
+    let (reason, message) = crate::revoke::revocation_reason(cert)?;
+    Some(if message.is_empty() {
+        reason.label().to_string()
+    } else {
+        format!("{} — {message}", reason.label())
+    })
 }
 
 /// Render a timestamp as a local-time date, or `""` for "never".
