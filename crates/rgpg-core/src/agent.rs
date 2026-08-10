@@ -59,51 +59,45 @@ fn runtime() -> Result<&'static Runtime> {
         .map_err(|e| Error::invalid(format!("cannot start the agent runtime: {e}")))
 }
 
-/// Path of the unrestricted agent socket.
+/// Tell the agent where to raise its pinentry, as gpg does on every connection.
 ///
-/// Modern GnuPG puts its sockets under the XDG runtime directory;
-/// `~/.gnupg/S.gpg-agent` usually does not exist at all.
-fn full_socket() -> Option<std::path::PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
-        candidates.push(std::path::PathBuf::from(runtime).join("gnupg/S.gpg-agent"));
+/// Without this the agent has no terminal and no display to prompt on and
+/// fails with "Inappropriate ioctl for device <Pinentry>". It bites decryption
+/// rather than signing only because a signing PIN is usually already cached.
+///
+/// Values are checked before being sent. An Assuan option value cannot contain
+/// whitespace, and `GPG_TTY` is very often the literal string "not a tty" when
+/// a program was started without a terminal — sending that malforms the
+/// command, and the agent then rejects whatever comes *next*, which makes the
+/// failure look like it belongs to an unrelated call.
+async fn set_pinentry_context(agent: &mut Agent) {
+    let usable = |value: Option<String>| {
+        value.filter(|v| {
+            !v.is_empty() && !v.chars().any(|c| c.is_whitespace() || c.is_control())
+        })
+    };
+
+    for (option, value) in [
+        ("display", usable(std::env::var("DISPLAY").ok())),
+        ("ttyname", usable(std::env::var("GPG_TTY").ok())),
+        ("ttytype", usable(std::env::var("TERM").ok())),
+    ] {
+        let Some(value) = value else { continue };
+        // Best effort: an agent that refuses one of these can still use keys
+        // whose PIN is cached, and refusing to connect would be worse.
+        let _ = agent.send_simple(format!("OPTION {option}={value}")).await;
     }
-    if let Some(home) = std::env::var_os("GNUPGHOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".gnupg")))
-    {
-        candidates.push(home.join("S.gpg-agent"));
-    }
-    candidates.into_iter().find(|p| p.exists())
 }
 
 fn connect() -> Result<Agent> {
     runtime()?.block_on(async {
-        if let Some(socket) = full_socket()
-            && let Ok(agent) = Agent::connect_to(&socket).await
-        {
-            return Ok(agent);
-        }
-        Agent::connect_to_default()
+        let mut agent = Agent::connect_to_default()
             .await
-            .map_err(|e| Error::invalid(format!("no gpg-agent to talk to: {e}")))
+            .map_err(|e| Error::invalid(format!("no gpg-agent to talk to: {e}")))?;
+        set_pinentry_context(&mut agent).await;
+        Ok(agent)
     })
 }
-
-// Card decryption needs a pinentry the agent can prompt on, and sending gpg's
-// `OPTION display=/ttyname=` lines to provide one has not been made to work:
-//
-//   * `send_simple` skips past `OK` and reads until the stream ends, so for
-//     `OPTION` — which answers with nothing else — it eats the *following*
-//     command's reply. The symptom is "Unknown IPC command" blamed on whatever
-//     came next: two OPTIONs and the third fails, four and `list_keys` fails.
-//   * Driving `send`/`next` directly and returning at the first `OK` fixes that
-//     one, and then the *second* OPTION closes the connection: the early return
-//     leaves the client's write state machine mid-transition.
-//
-// Until that is sorted the agent has no prompt target, so it can only use keys
-// whose PIN is already cached. Signing and certifying on a card work in that
-// state; decryption does not.
 
 /// Whether a gpg-agent is reachable at all.
 ///

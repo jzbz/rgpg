@@ -303,13 +303,15 @@ RGPG_TEST_CERT=/path/to/cert.asc cargo test -p rgpg-core signs_through_the_agent
 `certify` takes the same fallback, so a card key can certify — verified on the
 YubiKey.
 
-**Decryption on a card does not work yet.** The plumbing is there and the key is
-correctly identified: all three of the card's subkeys, encryption included,
-match the agent's keys by keygrip and report the right smartcard serial. The
-failure is in the PKESK decryption call itself, not in finding the key, and is
-the agent rejecting it with `Inappropriate ioctl for device <Pinentry>` — no terminal or display to raise a PIN prompt on. Signing and certifying escape it only while their PIN is cached, so this is one bug, not three. Passing gpg's usual `OPTION ttyname=/display=` lines on connect is the obvious fix and does not work as written: a rejected OPTION leaves the Assuan connection returning nothing and key enumeration silently goes empty. Whatever lands here must check each OPTION's reply. The `#[ignore]`d test
-`decrypts_and_certifies_through_the_agent` fails at that assertion on purpose,
-so the gap is not forgotten.
+Decryption on a card works too, and needs you present: the agent raises its
+own pinentry for the card PIN, which rgpg never sees.
+
+For that prompt to appear the agent has to be told where to put it, the way
+gpg does on every connection. The values are validated first — an Assuan option
+value cannot contain whitespace, and `GPG_TTY` is very often the literal string
+"not a tty" when a program was started without a terminal. Sending that
+malforms the command and the agent then rejects whatever arrives *next*, so the
+failure appears to belong to an unrelated call. That cost four wrong diagnoses.
 
 `revoke` is still local-only.
 
