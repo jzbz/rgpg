@@ -1,0 +1,25 @@
+//! Backend for rgpg: everything that does not draw pixels.
+//!
+//! The GUI crate is expected to depend only on this crate's types, never on
+//! `sequoia_openpgp` directly, so that the OpenPGP implementation stays
+//! replaceable and so that no Sequoia type ends up in a Slint callback.
+
+pub mod cert;
+pub mod error;
+pub mod keygen;
+pub mod ops;
+pub mod store;
+
+pub use cert::{CertSummary, Validity};
+pub use error::{Error, Result};
+pub use store::Store;
+
+use sequoia_openpgp::policy::StandardPolicy;
+
+/// The policy every operation in this crate is evaluated against.
+///
+/// Sequoia has no global policy: each call that interprets a certificate takes
+/// one explicitly, so a single definition here keeps the whole app consistent.
+pub fn policy() -> StandardPolicy<'static> {
+    StandardPolicy::new()
+}

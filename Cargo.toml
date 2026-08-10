@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/rgpg-core", "crates/rgpg-gui"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-only"
+repository = "https://github.com/jzbz/rgpg"
+
+[workspace.dependencies]
+rgpg-core = { path = "crates/rgpg-core" }
+
+# Pure-Rust crypto backend. `crypto-rust` is not the default (nettle is), and it
+# refuses to build without the two `allow-*` opt-ins because RustCrypto is not
+# constant-time everywhere. `compression-bzip2` is deliberately absent: it links
+# the C bzip2 library, and dropping it costs only BZip2-compressed messages.
+sequoia-openpgp = { version = "2.4", default-features = false, features = [
+    "crypto-rust",
+    "allow-experimental-crypto",
+    "allow-variable-time-crypto",
+    "compression-deflate",
+] }
+# default-features = false drops `keyserver`, which pulls in sequoia-net,
+# tokio and reqwest. Re-enable deliberately when keyserver lookup lands.
+sequoia-cert-store = { version = "0.7", default-features = false }
+
+anyhow = "1"
+thiserror = "2"
+dirs = "6"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "debuginfo"

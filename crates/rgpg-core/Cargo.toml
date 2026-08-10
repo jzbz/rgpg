@@ -1,0 +1,19 @@
+[package]
+name = "rgpg-core"
+description = "OpenPGP certificate store, key generation and message operations for rgpg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sequoia-openpgp.workspace = true
+sequoia-cert-store.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+dirs.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

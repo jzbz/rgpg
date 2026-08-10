@@ -1,0 +1,329 @@
+import {
+    Button,
+    ComboBox,
+    GroupBox,
+    HorizontalBox,
+    LineEdit,
+    Palette,
+    ScrollView,
+    StandardTableView,
+    VerticalBox,
+} from "std-widgets.slint";
+
+// Mirrors rgpg_core::CertSummary, flattened to strings so the UI never has to
+// format anything.
+export struct CertRow {
+    fingerprint: string,
+    fingerprint-pretty: string,
+    key-id: string,
+    primary-user-id: string,
+    user-ids: string,
+    algorithm: string,
+    created: string,
+    expires: string,
+    validity: string,
+    capabilities: string,
+    has-secret: bool,
+}
+
+component FieldRow inherits HorizontalBox {
+    in property <string> label;
+    in property <string> value;
+    padding: 0px;
+    spacing: 8px;
+    Text {
+        text: root.label;
+        width: 110px;
+        color: Palette.foreground.transparentize(0.4);
+        vertical-alignment: top;
+    }
+    Text {
+        text: root.value;
+        wrap: word-wrap;
+        horizontal-stretch: 1;
+    }
+}
+
+component KeygenDialog inherits Rectangle {
+    callback accepted(string, string, string, int, int);
+    callback rejected();
+    in property <bool> busy;
+
+    background: #00000099;
+
+    // Swallow clicks so the list behind the dialog stays inert.
+    TouchArea {}
+
+    Rectangle {
+        width: 460px;
+        height: 400px;
+        background: Palette.background;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Palette.border;
+
+        VerticalBox {
+            padding: 20px;
+            spacing: 12px;
+
+            Text {
+                text: "New OpenPGP key pair";
+                font-size: 18px;
+                font-weight: 700;
+            }
+
+            Text {
+                text: "The passphrase protects the secret key on disk. There is no way to recover it.";
+                wrap: word-wrap;
+                color: Palette.foreground.transparentize(0.4);
+            }
+
+            name-input := LineEdit {
+                placeholder-text: "Name";
+            }
+            email-input := LineEdit {
+                placeholder-text: "name@example.org";
+                input-type: text;
+            }
+            // Not `password :=`: an element named `password` shadows the
+            // InputType enum value of the same name.
+            pass-input := LineEdit {
+                placeholder-text: "Passphrase (optional)";
+                input-type: password;
+            }
+
+            HorizontalBox {
+                padding: 0px;
+                Text {
+                    text: "Key type";
+                    vertical-alignment: center;
+                    width: 90px;
+                }
+                key-type := ComboBox {
+                    model: ["Curve 25519 (recommended)", "RSA 3072", "RSA 4096"];
+                    current-index: 0;
+                }
+            }
+
+            HorizontalBox {
+                padding: 0px;
+                Text {
+                    text: "Expires in";
+                    vertical-alignment: center;
+                    width: 90px;
+                }
+                expiry := ComboBox {
+                    model: ["2 years", "1 year", "5 years", "never"];
+                    current-index: 0;
+                }
+            }
+
+            Rectangle { vertical-stretch: 1; }
+
+            HorizontalBox {
+                padding: 0px;
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    enabled: !root.busy;
+                    clicked => { root.rejected(); }
+                }
+                Button {
+                    text: root.busy ? "Generating…" : "Create";
+                    primary: true;
+                    enabled: !root.busy && name-input.text != "" && email-input.text != "";
+                    clicked => {
+                        root.accepted(
+                            name-input.text,
+                            email-input.text,
+                            pass-input.text,
+                            key-type.current-index,
+                            expiry.current-index,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "rgpg";
+    preferred-width: 1150px;
+    preferred-height: 720px;
+    min-width: 720px;
+    min-height: 480px;
+
+    in property <[[StandardListViewItem]]> rows;
+    in property <CertRow> detail;
+    in property <bool> has-selection: false;
+    in property <string> status: "";
+    in property <bool> busy: false;
+    in-out property <int> current-row: -1;
+    in-out property <bool> keygen-open: false;
+
+    callback refresh();
+    callback import-file();
+    callback export-selected();
+    callback filter-changed(string);
+    callback row-changed(int);
+    callback generate-key(string, string, string, int, int);
+
+    VerticalBox {
+        padding: 0px;
+        spacing: 0px;
+
+        // Toolbar
+        Rectangle {
+            background: Palette.alternate-background;
+            height: 52px;
+            HorizontalBox {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                alignment: start;
+
+                Button {
+                    text: "Import…";
+                    enabled: !root.busy;
+                    clicked => { root.import-file(); }
+                }
+                Button {
+                    text: "Export…";
+                    enabled: root.has-selection && !root.busy;
+                    clicked => { root.export-selected(); }
+                }
+                Button {
+                    text: "New key pair…";
+                    primary: true;
+                    enabled: !root.busy;
+                    clicked => { root.keygen-open = true; }
+                }
+                Button {
+                    text: "Reload";
+                    enabled: !root.busy;
+                    clicked => { root.refresh(); }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                LineEdit {
+                    placeholder-text: "Search name, e-mail or fingerprint";
+                    width: 320px;
+                    edited => { root.filter-changed(self.text); }
+                }
+            }
+        }
+
+        HorizontalBox {
+            padding: 0px;
+            spacing: 0px;
+
+            StandardTableView {
+                horizontal-stretch: 1;
+                columns: [
+                    { title: "Name", width: 220px },
+                    { title: "E-Mail", width: 220px },
+                    { title: "Valid from", width: 100px },
+                    { title: "Valid until", width: 100px },
+                    { title: "Key ID", width: 160px },
+                    { title: "Type", width: 90px },
+                    { title: "Usage", width: 70px },
+                    { title: "Secret", width: 60px },
+                ];
+                rows: root.rows;
+                current-row <=> root.current-row;
+                current-row-changed(row) => { root.row-changed(row); }
+            }
+
+            // Details
+            Rectangle {
+                width: 340px;
+                background: Palette.alternate-background;
+
+                ScrollView {
+                    VerticalBox {
+                        padding: 16px;
+                        spacing: 10px;
+                        alignment: start;
+
+                        if !root.has-selection: Text {
+                            text: "Select a certificate to see its details.";
+                            color: Palette.foreground.transparentize(0.4);
+                            wrap: word-wrap;
+                        }
+
+                        if root.has-selection: VerticalBox {
+                            padding: 0px;
+                            spacing: 10px;
+
+                            Text {
+                                text: root.detail.primary-user-id;
+                                font-size: 15px;
+                                font-weight: 700;
+                                wrap: word-wrap;
+                            }
+
+                            Rectangle {
+                                height: 24px;
+                                width: self.preferred-width;
+                                horizontal-stretch: 0;
+                                background: root.detail.validity == "valid"
+                                    ? #2e7d32
+                                    : (root.detail.validity == "expired" ? #ef6c00 : #c62828);
+                                border-radius: 4px;
+                                HorizontalBox {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    Text {
+                                        text: root.detail.validity;
+                                        color: white;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            FieldRow { label: "Fingerprint"; value: root.detail.fingerprint-pretty; }
+                            FieldRow { label: "Key ID"; value: root.detail.key-id; }
+                            FieldRow { label: "Algorithm"; value: root.detail.algorithm; }
+                            FieldRow { label: "Created"; value: root.detail.created; }
+                            FieldRow {
+                                label: "Expires";
+                                value: root.detail.expires == "" ? "never" : root.detail.expires;
+                            }
+                            FieldRow { label: "Usage"; value: root.detail.capabilities; }
+                            FieldRow {
+                                label: "Secret key";
+                                value: root.detail.has-secret ? "yes" : "no";
+                            }
+                            FieldRow { label: "User IDs"; value: root.detail.user-ids; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Status bar
+        Rectangle {
+            height: 28px;
+            background: Palette.alternate-background;
+            HorizontalBox {
+                padding-left: 12px;
+                padding-right: 12px;
+                Text {
+                    text: root.status;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+    }
+
+    if root.keygen-open: KeygenDialog {
+        busy: root.busy;
+        rejected => { root.keygen-open = false; }
+        accepted(name, email, password, key-type, expiry) => {
+            root.generate-key(name, email, password, key-type, expiry);
+        }
+    }
+}
