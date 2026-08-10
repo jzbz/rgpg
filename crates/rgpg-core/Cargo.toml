@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 sequoia-openpgp.workspace = true
 sequoia-cert-store.workspace = true
+sequoia-wot.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 dirs.workspace = true

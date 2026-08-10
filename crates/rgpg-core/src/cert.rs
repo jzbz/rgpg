@@ -47,6 +47,12 @@ pub struct CertSummary {
     pub can_encrypt: bool,
     /// Whether this certificate carries secret key material.
     pub has_secret: bool,
+    /// Filled in by the caller from [`crate::wot`]; `from_cert` cannot know it,
+    /// because authentication is a property of the whole store, not of one
+    /// certificate.
+    pub authentication: crate::Authentication,
+    /// Whether the user has designated this certificate a trust root.
+    pub is_trust_root: bool,
 }
 
 impl CertSummary {
@@ -133,6 +139,8 @@ impl CertSummary {
             can_sign,
             can_encrypt,
             has_secret,
+            authentication: crate::Authentication::Unknown,
+            is_trust_root: false,
         }
     }
 

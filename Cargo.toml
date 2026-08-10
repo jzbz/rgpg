@@ -25,6 +25,9 @@ sequoia-openpgp = { version = "2.4", default-features = false, features = [
 # default-features = false drops `keyserver`, which pulls in sequoia-net,
 # tokio and reqwest. Re-enable deliberately when keyserver lookup lands.
 sequoia-cert-store = { version = "0.7", default-features = false }
+# Web-of-trust authentication. Depends on the same sequoia-openpgp 2.x and
+# cert-store 0.7 we already use, and forces no crypto backend of its own.
+sequoia-wot = "0.15"
 
 anyhow = "1"
 thiserror = "2"

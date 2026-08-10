@@ -5355,6 +5355,7 @@ dependencies = [
  "dirs",
  "sequoia-cert-store",
  "sequoia-openpgp",
+ "sequoia-wot",
  "tempfile",
  "thiserror 2.0.20",
 ]
@@ -5672,6 +5673,21 @@ dependencies = [
  "typenum",
  "x25519-dalek",
  "xxhash-rust",
+]
+
+[[package]]
+name = "sequoia-wot"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc825dbf5b5d5d20b16a01e39319a0e4d6368ea8b6ea7e88d12d2bd30532b011"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "crossbeam",
+ "num_cpus",
+ "sequoia-cert-store",
+ "sequoia-openpgp",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

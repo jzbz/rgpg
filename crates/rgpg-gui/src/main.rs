@@ -9,9 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rgpg_core::cert::format_time;
+use rgpg_core::certify::{self, Certification, CertifyRequest};
 use rgpg_core::keygen::{self, KeyGenRequest, KeyType};
 use rgpg_core::ops::{self, InputKind, VerifyResult};
-use rgpg_core::{CertSummary, Store};
+use rgpg_core::{CertSummary, Store, wot};
 use slint::{ModelRc, SharedString, VecModel};
 
 slint::include_modules!();
@@ -73,6 +74,13 @@ struct State {
     dv_input: Option<PathBuf>,
     dv_data: Option<PathBuf>,
     dv_kind: InputKind,
+
+    /// Fingerprint of the certificate the certify dialog is about.
+    certify_target: Option<String>,
+    /// (user ID, ticked)
+    certify_user_ids: Vec<(String, bool)>,
+    /// (fingerprint, label) of our own certification-capable keys.
+    certify_certifiers: Vec<(String, String)>,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -245,6 +253,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         dv_input: None,
         dv_data: None,
         dv_kind: InputKind::NotOpenPgp,
+        certify_target: None,
+        certify_user_ids: Vec::new(),
+        certify_certifiers: Vec::new(),
     }));
 
     reload(&ui, &state);
@@ -252,6 +263,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     wire_keygen(&ui, &state);
     wire_sign_encrypt(&ui, &state);
     wire_decrypt_verify(&ui, &state);
+    wire_certify(&ui, &state);
 
     ui.run()?;
     Ok(())
@@ -290,14 +302,20 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |row| {
             let ui = ui_weak.unwrap();
-            let state = state.lock().unwrap();
-            match usize::try_from(row).ok().and_then(|r| state.shown.get(r)) {
-                Some(summary) => {
-                    ui.set_detail(to_row(summary));
-                    ui.set_has_selection(true);
-                }
-                None => ui.set_has_selection(false),
-            }
+            let guard = state.lock().unwrap();
+
+            let Some(summary) = usize::try_from(row)
+                .ok()
+                .and_then(|r| guard.shown.get(r))
+                .cloned()
+            else {
+                ui.set_has_selection(false);
+                return;
+            };
+
+            ui.set_detail(to_row(&summary));
+            ui.set_has_selection(true);
+            push_certifications(&ui, &guard, &summary);
         }
     });
 
@@ -831,6 +849,274 @@ fn push_decrypt_verify(ui: &AppWindow, state: &State) {
     });
 }
 
+// ------------------------------------------------------------ certify / trust
+
+fn wire_certify(ui: &AppWindow, state: &Shared) {
+    ui.on_open_certify({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let ui = ui_weak.unwrap();
+            let mut guard = state.lock().unwrap();
+
+            let Some(target) = usize::try_from(ui.get_current_row())
+                .ok()
+                .and_then(|r| guard.shown.get(r))
+                .cloned()
+            else {
+                return;
+            };
+
+            // Every user ID starts ticked: certifying a person usually means
+            // certifying the identity you just checked, and they normally have
+            // one. Unticking is cheaper than hunting for the right box.
+            let user_ids: Vec<(String, bool)> = target
+                .user_ids
+                .iter()
+                .map(|uid| (uid.clone(), true))
+                .collect();
+
+            let certifiers: Vec<(String, String)> = guard
+                .all
+                .iter()
+                .filter(|c| c.has_secret && c.can_certify)
+                .map(|c| (c.fingerprint.clone(), c.primary_user_id.clone()))
+                .collect();
+
+            guard.certify_target = Some(target.fingerprint.clone());
+            guard.certify_user_ids = user_ids;
+            guard.certify_certifiers = certifiers;
+
+            ui.set_certify_target(target.primary_user_id.clone().into());
+            push_certify(&ui, &guard);
+            drop(guard);
+            ui.set_certify_open(true);
+        }
+    });
+
+    ui.on_certify_toggle_user_id({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |index| {
+            let ui = ui_weak.unwrap();
+            let mut guard = state.lock().unwrap();
+            if let Some(entry) = usize::try_from(index)
+                .ok()
+                .and_then(|i| guard.certify_user_ids.get_mut(i))
+            {
+                entry.1 = !entry.1;
+            }
+            push_certify(&ui, &guard);
+        }
+    });
+
+    ui.on_certify_run({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |certifier_index, publishable, introducer, confidence, password| {
+            let ui = ui_weak.unwrap();
+            ui.set_busy(true);
+            ui.set_status("Certifying…".into());
+
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let password = password.to_string();
+            std::thread::spawn(move || {
+                let outcome = run_certify(
+                    &state,
+                    certifier_index,
+                    publishable,
+                    introducer,
+                    confidence,
+                    &password,
+                );
+                let _ = slint::invoke_from_event_loop(move || {
+                    let ui = ui_weak.unwrap();
+                    ui.set_busy(false);
+                    match outcome {
+                        Ok(count) => {
+                            ui.set_certify_open(false);
+                            reload(&ui, &state);
+                            ui.set_status(
+                                format!("Certified {count} user ID(s)").into(),
+                            );
+                        }
+                        Err(message) => ui.set_status(message.into()),
+                    }
+                });
+            });
+        }
+    });
+
+    ui.on_toggle_trust_root({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let ui = ui_weak.unwrap();
+            let fingerprint = ui.get_detail().fingerprint.to_string();
+            if fingerprint.is_empty() {
+                return;
+            }
+
+            let outcome = {
+                let guard = state.lock().unwrap();
+                let was_root = guard
+                    .all
+                    .iter()
+                    .find(|c| c.fingerprint == fingerprint)
+                    .is_some_and(|c| c.is_trust_root);
+                guard.store.set_trust_root(&fingerprint, !was_root)
+            };
+
+            match outcome {
+                Ok(()) => {
+                    // Trust roots change what the whole graph authenticates,
+                    // so this is a full recompute, not a row update.
+                    reload(&ui, &state);
+                    reselect(&ui, &state, &fingerprint);
+                }
+                Err(e) => ui.set_status(format!("Could not change trust root: {e}").into()),
+            }
+        }
+    });
+}
+
+/// The blocking half of Certify, run on a worker thread.
+fn run_certify(
+    state: &Shared,
+    certifier_index: i32,
+    publishable: bool,
+    introducer: bool,
+    confidence: i32,
+    password: &str,
+) -> Result<usize, String> {
+    let guard = state.lock().unwrap();
+
+    let target = guard
+        .certify_target
+        .clone()
+        .ok_or_else(|| "No certificate selected".to_string())?;
+    let (certifier, _) = guard
+        .certify_certifiers
+        .get(certifier_index.max(0) as usize)
+        .ok_or_else(|| "Choose a key to certify with".to_string())?;
+
+    let user_ids: Vec<String> = guard
+        .certify_user_ids
+        .iter()
+        .filter(|(_, selected)| *selected)
+        .map(|(uid, _)| uid.clone())
+        .collect();
+    if user_ids.is_empty() {
+        return Err("Select at least one user ID".to_string());
+    }
+
+    let mut request = CertifyRequest::new(certifier, target);
+    request.user_ids = user_ids;
+    request.exportable = publishable;
+    request.depth = if introducer { 1 } else { 0 };
+    request.amount = if confidence == 0 {
+        certify::FULL
+    } else {
+        certify::PARTIAL
+    };
+    request.password = Some(password.to_string()).filter(|p| !p.is_empty());
+
+    let count = request.user_ids.len();
+    certify::certify(&guard.store, &request).map_err(|e| format!("Certification failed: {e}"))?;
+    Ok(count)
+}
+
+fn push_certify(ui: &AppWindow, state: &State) {
+    let rows: Vec<UserIdRow> = state
+        .certify_user_ids
+        .iter()
+        .map(|(text, selected)| UserIdRow {
+            text: text.clone().into(),
+            selected: *selected,
+        })
+        .collect();
+
+    let certifiers: Vec<SharedString> = state
+        .certify_certifiers
+        .iter()
+        .map(|(_, label)| SharedString::from(label.as_str()))
+        .collect();
+
+    ui.set_certify_chosen(state.certify_user_ids.iter().filter(|(_, s)| *s).count() as i32);
+    ui.set_certify_user_ids(ModelRc::new(VecModel::from(rows)));
+    ui.set_certify_certifiers(ModelRc::new(VecModel::from(certifiers)));
+}
+
+/// Load and display the certifications on one certificate.
+fn push_certifications(ui: &AppWindow, state: &State, summary: &CertSummary) {
+    let rows = match state.store.lookup(&summary.fingerprint) {
+        Ok(cert) => certify::certifications(&state.store, &cert)
+            .unwrap_or_default()
+            .iter()
+            .map(|c| certification_row(c, summary.user_ids.len() > 1))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    ui.set_detail_certifications(ModelRc::new(VecModel::from(rows)));
+}
+
+fn certification_row(certification: &Certification, show_user_id: bool) -> CertificationRow {
+    let mut parts: Vec<String> = Vec::new();
+
+    if show_user_id {
+        parts.push(certification.user_id.clone());
+    }
+    parts.push(
+        if certification.amount >= certify::FULL {
+            "full"
+        } else {
+            "partial"
+        }
+        .to_string(),
+    );
+    parts.push(
+        if certification.exportable {
+            "publishable"
+        } else {
+            "local"
+        }
+        .to_string(),
+    );
+    if certification.depth > 0 {
+        parts.push(format!("introducer, depth {}", certification.depth));
+    }
+    if let Some(created) = certification.created {
+        parts.push(format_time(Some(created)));
+    }
+    match certification.verified {
+        Some(true) => {}
+        Some(false) => parts.push("signature does not check out".to_string()),
+        None => parts.push("certifier not in this store".to_string()),
+    }
+
+    CertificationRow {
+        certifier: certification.certifier.clone().into(),
+        user_id: certification.user_id.clone().into(),
+        detail: parts.join(" · ").into(),
+        good: certification.is_good(),
+        by_me: certification.by_me,
+    }
+}
+
+/// Re-select the row for `fingerprint` after the list has been rebuilt.
+fn reselect(ui: &AppWindow, state: &Shared, fingerprint: &str) {
+    let guard = state.lock().unwrap();
+    let Some(index) = guard
+        .shown
+        .iter()
+        .position(|c| c.fingerprint == fingerprint)
+    else {
+        return;
+    };
+
+    let summary = guard.shown[index].clone();
+    ui.set_current_row(index as i32);
+    ui.set_detail(to_row(&summary));
+    ui.set_has_selection(true);
+    push_certifications(ui, &guard, &summary);
+}
+
 // ------------------------------------------------------------------- plumbing
 
 /// Re-read the store from disk and rebuild the list.
@@ -847,10 +1133,25 @@ fn reload(ui: &AppWindow, state: &Shared) {
 
     guard.all = certs.iter().map(CertSummary::from_cert).collect();
 
+    // Authentication is a property of the whole graph, so it is computed once
+    // for the store rather than per certificate. Trust roots are the explicit
+    // list plus every key whose secret half is here.
+    let roots: Vec<String> = guard
+        .store
+        .effective_roots()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let explicit_roots = guard.store.trust_roots().unwrap_or_default();
+    let authenticated = wot::authenticate_all(&certs, &roots);
+
     // The secret half lives outside cert-d, so ask the store which ones it has.
     let State { store, all, .. } = &mut *guard;
     for summary in all.iter_mut() {
+        let key = summary.fingerprint.to_uppercase();
         summary.has_secret = store.has_secret(&summary.fingerprint);
+        summary.is_trust_root = explicit_roots.contains(&key);
+        summary.authentication = authenticated.get(&key).copied().unwrap_or_default();
     }
 
     // A stable order beats cert-d's, which is by fingerprint. Own keys first:
@@ -883,9 +1184,14 @@ fn apply_filter(ui: &AppWindow, state: &Shared) {
     let total = guard.all.len();
     let mine = guard.all.iter().filter(|c| c.has_secret).count();
     let shown = rows.len();
+    let can_certify = guard
+        .all
+        .iter()
+        .any(|c| c.has_secret && c.can_certify);
     drop(guard);
 
     ui.set_certs(ModelRc::new(VecModel::from(rows)));
+    ui.set_can_certify(can_certify);
     ui.set_count_all(total as i32);
     ui.set_count_mine(mine as i32);
     ui.set_count_others((total - mine) as i32);
@@ -921,6 +1227,8 @@ fn to_row(summary: &CertSummary) -> CertRow {
         validity: summary.validity.as_str().into(),
         capabilities: summary.capabilities().into(),
         has_secret: summary.has_secret,
+        authentication: summary.authentication.as_str().into(),
+        is_trust_root: summary.is_trust_root,
     }
 }
 

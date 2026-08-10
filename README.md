@@ -15,7 +15,7 @@ encrypting, decrypting and verifying all work from the window. Everything under
 
 | Crate | Contents |
 | --- | --- |
-| `crates/rgpg-core` | Certificate store, key generation, encrypt/decrypt/sign/verify. No GUI types. |
+| `crates/rgpg-core` | Certificate store, key generation, encrypt/decrypt/sign/verify, certification and web-of-trust. No GUI types. |
 | `crates/rgpg-gui` | Slint front end. Binary is `rgpg`. |
 
 The GUI depends only on `rgpg-core`'s own types — no `sequoia_openpgp` type
@@ -185,6 +185,40 @@ both would have to be hand-rolled, and the merge rules for combining two
 versions of the same certificate are exactly the kind of thing worth not
 reimplementing. None of it is in the crypto path.
 
+## Certifying and trust
+
+Two different questions get asked about a certificate, and rgpg shows both
+because confusing them is how people end up trusting the wrong key:
+
+- **Validity** — is the certificate internally sound? Self-signatures check
+  out, not expired, not revoked. This is the `valid` / `expired` / `revoked`
+  pill, and it says nothing about who the certificate belongs to.
+- **Authentication** — does the name on it belong to the person you think? This
+  is the `verified` / `partly verified` pill, computed by `sequoia-wot` from the
+  certifications in the store. A perfectly valid certificate from a stranger is
+  unauthenticated, and a key you confirmed years ago stays authenticated after
+  it expires.
+
+Certifying is done from a certificate's details pane. A certification always
+names one *user ID* — OpenPGP has no way to vouch for a certificate as a whole
+— so the dialog lists them and you tick the ones you actually checked. The
+options map onto OpenPGP as follows:
+
+| Dialog | What it writes |
+| --- | --- |
+| Confidence: Full / Partial | trust amount 120 / 60; anything but Full becomes a trust signature |
+| Publishable | an exportable certification, shareable and included in exports |
+| *(unticked)* | a local certification, never written out by `export_file` |
+| Trusted introducer | a trust signature of depth 1: keys *they* certify count here too |
+
+Trust roots are where authentication starts. Every key whose secret half is in
+the store is a root automatically — the alternative is a fresh install where
+nothing authenticates until the user finds a checkbox — and any other
+certificate can be marked one by hand from its details pane.
+
+The graph is rebuilt on every store reload rather than cached, which is fine
+for the sizes tested and will need revisiting for a keyring of thousands.
+
 ## Where certificates live
 
 Public certificates go in a [pgp-cert-d][certd] directory, the same layout `sq`
@@ -249,12 +283,12 @@ Roughly in the order Kleopatra users would notice them missing:
 
 - **Reading GnuPG's store directly** — see [Coming from GnuPG](#coming-from-gnupg).
 - **Certificate details beyond the summary pane** — subkey list, per-user-ID
-  signatures, certifications received.
+  self-signatures.
+- **Revoking a certification** you previously made. Certifying is one-way in
+  the UI today.
 - **Clipboard and inline text** operations; today every operation is on a file.
 - **Column sorting.** The list sorts own-keys-first then by name, and the rail
   filters by scope, but there is no sort control.
-- **Certifying other people's keys**, setting ownertrust, and any web-of-trust
-  display (`sequoia-wot`).
 - **Revocation** — `keygen` produces a revocation certificate and currently
   throws it away. It cannot be regenerated without the secret key.
 - **Keyserver and WKD lookup** — re-enable `sequoia-cert-store`'s `keyserver`

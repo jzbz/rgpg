@@ -17,6 +17,7 @@
 //!
 //! [pgp-cert-d]: https://www.ietf.org/archive/id/draft-nwjw-openpgp-cert-d-02.html
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -32,6 +33,9 @@ use crate::error::{Error, Result};
 pub struct Store {
     certs: CertStore<'static>,
     secrets_dir: PathBuf,
+    /// Fingerprints the user has explicitly designated as trust roots, one per
+    /// line. Own keys are roots implicitly — see [`Store::effective_roots`].
+    roots_path: PathBuf,
 }
 
 impl Store {
@@ -60,7 +64,54 @@ impl Store {
         Ok(Store {
             certs: CertStore::open(cert_dir)?,
             secrets_dir: secrets_dir.to_path_buf(),
+            roots_path: secrets_dir.with_file_name("trust-roots"),
         })
+    }
+
+    /// Fingerprints the user has explicitly marked as trust roots.
+    pub fn trust_roots(&self) -> Result<BTreeSet<String>> {
+        match fs::read_to_string(&self.roots_path) {
+            Ok(text) => Ok(text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_uppercase)
+                .collect()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(BTreeSet::new()),
+            Err(e) => Err(Error::io(
+                format!("reading {}", self.roots_path.display()),
+                e,
+            )),
+        }
+    }
+
+    pub fn set_trust_root(&self, fingerprint: &str, root: bool) -> Result<()> {
+        let mut roots = self.trust_roots()?;
+        if root {
+            roots.insert(fingerprint.to_uppercase());
+        } else {
+            roots.remove(&fingerprint.to_uppercase());
+        }
+
+        let mut text = roots.into_iter().collect::<Vec<_>>().join("\n");
+        text.push('\n');
+        fs::write(&self.roots_path, text)
+            .map_err(|e| Error::io(format!("writing {}", self.roots_path.display()), e))
+    }
+
+    /// The roots the web of trust is actually evaluated against: the explicit
+    /// list plus every certificate whose secret key is here.
+    ///
+    /// Own keys are included automatically because the alternative — a fresh
+    /// install where nothing authenticates until the user finds a checkbox — is
+    /// the wrong default, and because a key you hold the secret half of is one
+    /// you already trust by definition.
+    pub fn effective_roots(&self) -> Result<BTreeSet<String>> {
+        let mut roots = self.trust_roots()?;
+        for cert in self.secret_certs()? {
+            roots.insert(cert.fingerprint().to_hex().to_uppercase());
+        }
+        Ok(roots)
     }
 
     /// Every public certificate in the store, parsed.

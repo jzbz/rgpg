@@ -19,6 +19,27 @@ export struct CertRow {
     // Index into Theme.monograms, derived from the fingerprint so a colour
     // stays with a certificate across sessions and across light/dark.
     tint-index: int,
+    // Web-of-trust result: "verified", "partly verified" or "unverified".
+    // Separate from `validity`, which is only about the certificate being
+    // internally sound.
+    authentication: string,
+    is-trust-root: bool,
+}
+
+// One certification already on a certificate, flattened for display.
+export struct CertificationRow {
+    certifier: string,
+    user-id: string,
+    // "full · publishable · 2026-08-10", or why it could not be checked.
+    detail: string,
+    good: bool,
+    by-me: bool,
+}
+
+// A user ID offered for certification, with its tick state.
+export struct UserIdRow {
+    text: string,
+    selected: bool,
 }
 
 export struct RecipientRow {

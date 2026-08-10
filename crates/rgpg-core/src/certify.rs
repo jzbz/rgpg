@@ -1,0 +1,322 @@
+//! Certifying other people's certificates, and reading the certifications a
+//! certificate already carries.
+//!
+//! A certification is a signature by one certificate over a *user ID* of
+//! another — the OpenPGP way of saying "I checked, and this name and address
+//! really do belong to this key". It is the raw material the web of trust in
+//! [`crate::wot`] reasons over.
+
+use std::time::{Duration, SystemTime};
+
+use sequoia_openpgp::Cert;
+use sequoia_openpgp::packet::Signature;
+use sequoia_openpgp::packet::signature::SignatureBuilder;
+use sequoia_openpgp::types::SignatureType;
+
+use crate::cert::CertSummary;
+use crate::error::{Error, Result};
+use crate::policy;
+use crate::store::Store;
+
+/// Full confidence, in OpenPGP's 0..=255 trust scale.
+pub const FULL: u8 = 120;
+/// Partial confidence: enough only in combination with other certifications.
+pub const PARTIAL: u8 = 60;
+
+#[derive(Debug, Clone)]
+pub struct CertifyRequest {
+    /// Fingerprint of our own certificate doing the certifying.
+    pub certifier: String,
+    /// Fingerprint of the certificate being certified.
+    pub target: String,
+    /// Which of the target's user IDs to sign. Certifying a certificate as a
+    /// whole is not a thing OpenPGP can express; every certification names one
+    /// user ID.
+    pub user_ids: Vec<String>,
+    /// Exportable certifications are meant to be published and shared; a local
+    /// one stays in this store and is never written out by `export_file`.
+    pub exportable: bool,
+    /// 0 for an ordinary certification. 1 or more makes it a *trust signature*:
+    /// the target becomes a trusted introducer whose own certifications this
+    /// store will honour, up to `depth` hops away.
+    pub depth: u8,
+    /// How much this certification vouches for the binding: [`FULL`] or
+    /// [`PARTIAL`].
+    pub amount: u8,
+    pub expires: Option<Duration>,
+    pub password: Option<String>,
+}
+
+impl CertifyRequest {
+    pub fn new(certifier: impl Into<String>, target: impl Into<String>) -> Self {
+        CertifyRequest {
+            certifier: certifier.into(),
+            target: target.into(),
+            user_ids: Vec::new(),
+            exportable: true,
+            depth: 0,
+            amount: FULL,
+            expires: None,
+            password: None,
+        }
+    }
+}
+
+/// One certification already present on a certificate.
+#[derive(Debug, Clone)]
+pub struct Certification {
+    pub user_id: String,
+    /// The certifier's primary user ID when their certificate is in the store,
+    /// otherwise their key handle.
+    pub certifier: String,
+    pub certifier_fingerprint: Option<String>,
+    pub created: Option<SystemTime>,
+    pub exportable: bool,
+    pub depth: u8,
+    pub amount: u8,
+    /// Whether the signature checks out against the certifier's key. `None`
+    /// when the certifier is not in the store and it could not be checked.
+    pub verified: Option<bool>,
+    /// Made by a certificate whose secret key this store holds.
+    pub by_me: bool,
+}
+
+impl Certification {
+    /// Whether this certification should count towards trust: it verified, and
+    /// it was made by someone we can name.
+    pub fn is_good(&self) -> bool {
+        self.verified == Some(true)
+    }
+}
+
+/// Sign one or more of `target`'s user IDs with `certifier`'s key.
+///
+/// The updated certificate is written back to the store and returned.
+pub fn certify(store: &Store, request: &CertifyRequest) -> Result<Cert> {
+    if request.user_ids.is_empty() {
+        return Err(Error::invalid("select at least one user ID to certify"));
+    }
+    if request.certifier == request.target {
+        return Err(Error::invalid(
+            "a certificate already vouches for itself; certify someone else's",
+        ));
+    }
+
+    let policy = policy();
+    let certifier = store.secret_cert(&request.certifier)?;
+    let target = store.lookup(&request.target)?;
+
+    let valid = certifier
+        .with_policy(&policy, None)
+        .map_err(|_| Error::NoSecretKey(request.certifier.clone()))?;
+    let ka = valid
+        .keys()
+        .secret()
+        .alive()
+        .revoked(false)
+        .supported()
+        .for_certification()
+        .next()
+        .ok_or_else(|| Error::NoSecretKey(request.certifier.clone()))?;
+
+    let key = ka.key().clone();
+    let key = if key.secret().is_encrypted() {
+        let password = request
+            .password
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| Error::invalid("this key is passphrase-protected"))?;
+        key.decrypt_secret(&password.into())?
+    } else {
+        key
+    };
+    let mut signer = key.into_keypair()?;
+
+    let mut signatures: Vec<Signature> = Vec::new();
+    for wanted in &request.user_ids {
+        let userid = target
+            .userids()
+            .map(|ua| ua.userid().clone())
+            .find(|uid| String::from_utf8_lossy(uid.value()) == wanted.as_str())
+            .ok_or_else(|| Error::invalid(format!("{wanted} is not a user ID on this key")))?;
+
+        let mut builder = SignatureBuilder::new(SignatureType::GenericCertification)
+            .set_exportable_certification(request.exportable)?;
+
+        // An ordinary certification already means "full confidence in this
+        // binding". Anything else — a lower amount, or delegation to a trusted
+        // introducer — has to be spelled out as a trust signature.
+        if request.depth > 0 || request.amount != FULL {
+            builder = builder.set_trust_signature(request.depth, request.amount)?;
+        }
+        if let Some(expires) = request.expires {
+            builder = builder.set_signature_validity_period(expires)?;
+        }
+
+        signatures.push(builder.sign_userid_binding(
+            &mut signer,
+            target.primary_key().key(),
+            &userid,
+        )?);
+    }
+
+    let certified = target.insert_packets(signatures)?.0;
+    store.insert(&certified)?;
+    Ok(certified)
+}
+
+/// Every third-party certification on `cert`, verified where possible.
+pub fn certifications(store: &Store, cert: &Cert) -> Result<Vec<Certification>> {
+    let mut out = Vec::new();
+    let primary = cert.primary_key().key();
+
+    for ua in cert.userids() {
+        let user_id = String::from_utf8_lossy(ua.userid().value()).into_owned();
+
+        for signature in ua.certifications() {
+            let (depth, amount) = signature.trust_signature().unwrap_or((0, FULL));
+            let mut entry = Certification {
+                user_id: user_id.clone(),
+                certifier: String::new(),
+                certifier_fingerprint: None,
+                created: signature.signature_creation_time(),
+                exportable: signature.exportable_certification().unwrap_or(true),
+                depth,
+                amount,
+                verified: None,
+                by_me: false,
+            };
+
+            // Check the signature against whichever issuer we can resolve. An
+            // unresolvable issuer is normal — it just means we have not met
+            // that person — so it is reported rather than dropped.
+            for handle in signature.get_issuers() {
+                let Ok(certifier) = store.lookup(&handle.to_string()) else {
+                    entry.certifier = handle.to_string();
+                    continue;
+                };
+
+                let fingerprint = certifier.fingerprint().to_hex();
+                entry.certifier = CertSummary::from_cert(&certifier).primary_user_id;
+                entry.by_me = store.has_secret(&fingerprint);
+                entry.certifier_fingerprint = Some(fingerprint);
+                entry.verified = Some(
+                    signature
+                        .clone()
+                        .verify_userid_binding(
+                            certifier.primary_key().key(),
+                            primary,
+                            ua.userid(),
+                        )
+                        .is_ok(),
+                );
+                break;
+            }
+
+            if entry.certifier.is_empty() {
+                entry.certifier = "unknown certifier".to_string();
+            }
+            out.push(entry);
+        }
+    }
+
+    out.sort_by(|a, b| {
+        b.by_me
+            .cmp(&a.by_me)
+            .then_with(|| a.user_id.cmp(&b.user_id))
+            .then_with(|| a.certifier.cmp(&b.certifier))
+    });
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keygen::{KeyGenRequest, generate};
+
+    fn scratch() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("certs.d"), dir.path().join("secrets")).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn certifies_a_user_id_and_reads_it_back() {
+        let (_dir, store) = scratch();
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        let bob = generate(&KeyGenRequest::new("Bob <bob@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+        store.insert(&bob).unwrap();
+
+        assert!(certifications(&store, &bob).unwrap().is_empty());
+
+        let mut request = CertifyRequest::new(alice.fingerprint().to_hex(), bob.fingerprint().to_hex());
+        request.user_ids = vec!["Bob <bob@example.org>".to_string()];
+        certify(&store, &request).unwrap();
+
+        let bob = store.lookup(&bob.fingerprint().to_hex()).unwrap();
+        let found = certifications(&store, &bob).unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].user_id, "Bob <bob@example.org>");
+        assert_eq!(found[0].certifier, "Alice <alice@example.org>");
+        assert_eq!(found[0].verified, Some(true));
+        assert!(found[0].by_me);
+        assert!(found[0].exportable);
+        assert_eq!(found[0].amount, FULL);
+        assert_eq!(found[0].depth, 0);
+    }
+
+    #[test]
+    fn records_a_partial_trust_signature() {
+        let (_dir, store) = scratch();
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        let bob = generate(&KeyGenRequest::new("Bob <bob@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+        store.insert(&bob).unwrap();
+
+        let mut request = CertifyRequest::new(alice.fingerprint().to_hex(), bob.fingerprint().to_hex());
+        request.user_ids = vec!["Bob <bob@example.org>".to_string()];
+        request.amount = PARTIAL;
+        request.depth = 1;
+        request.exportable = false;
+        certify(&store, &request).unwrap();
+
+        let bob = store.lookup(&bob.fingerprint().to_hex()).unwrap();
+        let found = certifications(&store, &bob).unwrap();
+
+        assert_eq!(found[0].amount, PARTIAL);
+        assert_eq!(found[0].depth, 1);
+        assert!(!found[0].exportable);
+        assert!(found[0].is_good());
+    }
+
+    #[test]
+    fn refuses_to_certify_yourself_or_nothing() {
+        let (_dir, store) = scratch();
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+        let fingerprint = alice.fingerprint().to_hex();
+
+        let mut same = CertifyRequest::new(&fingerprint, &fingerprint);
+        same.user_ids = vec!["Alice <alice@example.org>".to_string()];
+        assert!(certify(&store, &same).is_err());
+
+        let bob = generate(&KeyGenRequest::new("Bob <bob@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert(&bob).unwrap();
+        let empty = CertifyRequest::new(&fingerprint, bob.fingerprint().to_hex());
+        assert!(certify(&store, &empty).is_err());
+    }
+}

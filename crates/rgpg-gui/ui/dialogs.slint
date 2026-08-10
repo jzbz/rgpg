@@ -1,7 +1,7 @@
 import { ListView } from "std-widgets.slint";
 import { Theme, Icons, Icon } from "theme.slint";
 import { Btn, Check, DialogShell, Divider, Field, Monogram, Pill, Select, Tone, Variant } from "widgets.slint";
-import { RecipientRow, SignatureRow } from "types.slint";
+import { RecipientRow, SignatureRow, UserIdRow } from "types.slint";
 
 // A file slot: label, the chosen path (or a hint), and a Choose button.
 component FilePick inherits VerticalLayout {
@@ -467,6 +467,204 @@ export component DecryptVerifyDialog inherits DialogShell {
                 variant: Variant.primary;
                 enabled: !root.busy && root.can-run;
                 clicked => { root.run(root.password); }
+            }
+        }
+    }
+}
+
+export component CertifyDialog inherits DialogShell {
+    in property <string> target-name;
+    in property <[UserIdRow]> user-ids;
+    in property <[string]> certifiers;
+    in property <int> chosen-count;
+    in property <bool> busy;
+    callback toggle-user-id(int);
+    callback run(int, bool, bool, int, string);
+
+    property <string> password;
+    property <int> certifier-index: 0;
+    property <int> confidence: 0;
+    property <bool> publishable: true;
+    property <bool> introducer: false;
+    property <bool> can-run: root.chosen-count > 0 && root.certifiers.length > 0;
+
+    title: "Certify identity";
+    subtitle: "Confirm that these user IDs really belong to " + root.target-name
+        + ". Only certify what you have actually checked — in person, or over a "
+        + "channel you already trust.";
+    card-width: 540px;
+
+    VerticalLayout {
+        spacing: Theme.s4;
+
+        VerticalLayout {
+            spacing: 6px;
+
+            HorizontalLayout {
+                Text {
+                    text: "User IDs";
+                    color: Theme.text-dim;
+                    font-size: Theme.t-sm;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: root.chosen-count == 0 ? "none selected" : "\{root.chosen-count} selected";
+                    color: root.chosen-count == 0 ? Theme.warn : Theme.text-dim;
+                    font-size: Theme.t-sm;
+                }
+            }
+
+            Rectangle {
+                height: min(140px, max(46px, root.user-ids.length * 34px + 8px));
+                background: Theme.surface-sunken;
+                border-radius: Theme.r-sm;
+                border-width: 1px;
+                border-color: Theme.border;
+                clip: true;
+
+                ListView {
+                    for entry[index] in root.user-ids: Rectangle {
+                        height: 34px;
+                        background: pick.has-hover ? Theme.hover : transparent;
+
+                        HorizontalLayout {
+                            padding-left: Theme.s3;
+                            padding-right: Theme.s3;
+                            spacing: Theme.s3;
+
+                            Rectangle {
+                                width: 17px;
+                                height: 17px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 5px;
+                                background: entry.selected ? Theme.accent : Theme.surface;
+                                border-width: 1px;
+                                border-color: entry.selected ? Theme.accent : Theme.border-strong;
+                                if entry.selected: Icon {
+                                    glyph: Icons.check;
+                                    tint: Theme.accent-ink;
+                                    width: 12px;
+                                    height: 12px;
+                                }
+                            }
+
+                            Text {
+                                text: entry.text;
+                                color: Theme.text;
+                                font-size: Theme.t-md;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                        }
+
+                        pick := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.toggle-user-id(index); }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.s3;
+
+            VerticalLayout {
+                spacing: 6px;
+                horizontal-stretch: 1;
+                Text {
+                    text: "Certify with";
+                    color: Theme.text-dim;
+                    font-size: Theme.t-sm;
+                }
+                Select {
+                    model: root.certifiers;
+                    enabled: !root.busy;
+                    current: root.certifier-index;
+                    changed(index) => { root.certifier-index = index; }
+                }
+            }
+
+            VerticalLayout {
+                spacing: 6px;
+                width: 150px;
+                Text {
+                    text: "Confidence";
+                    color: Theme.text-dim;
+                    font-size: Theme.t-sm;
+                }
+                Select {
+                    model: ["Full", "Partial"];
+                    enabled: !root.busy;
+                    current: root.confidence;
+                    changed(index) => { root.confidence = index; }
+                }
+            }
+        }
+
+        VerticalLayout {
+            spacing: Theme.s2;
+
+            Check {
+                text: "Publishable — others may see this certification";
+                checked: root.publishable;
+                enabled: !root.busy;
+                toggled => { root.publishable = !root.publishable; }
+            }
+            Check {
+                text: "Treat as a trusted introducer";
+                checked: root.introducer;
+                enabled: !root.busy;
+                toggled => { root.introducer = !root.introducer; }
+            }
+            if root.introducer: Text {
+                text: "Certificates this key certifies will also count as verified here.";
+                color: Theme.text-faint;
+                font-size: Theme.t-sm;
+                wrap: word-wrap;
+            }
+        }
+
+        Field {
+            placeholder: "Passphrase for your certifying key (if any)";
+            secret: true;
+            enabled: !root.busy;
+            edited(text) => { root.password = text; }
+        }
+
+        if root.certifiers.length == 0: Text {
+            text: "No key in this store can certify. Create a key pair first.";
+            color: Theme.warn;
+            font-size: Theme.t-sm;
+            wrap: word-wrap;
+        }
+
+        Divider { }
+
+        HorizontalLayout {
+            spacing: Theme.s2;
+            alignment: end;
+            Btn {
+                text: "Cancel";
+                variant: Variant.ghost;
+                enabled: !root.busy;
+                clicked => { root.dismissed(); }
+            }
+            Btn {
+                text: root.busy ? "Certifying…" : "Certify";
+                glyph: Icons.certify;
+                variant: Variant.primary;
+                enabled: !root.busy && root.can-run;
+                clicked => {
+                    root.run(
+                        root.certifier-index,
+                        root.publishable,
+                        root.introducer,
+                        root.confidence,
+                        root.password,
+                    );
+                }
             }
         }
     }

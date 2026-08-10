@@ -1,12 +1,12 @@
-import { ListView } from "std-widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme, Icons, Icon } from "theme.slint";
 import {
     Btn, Check, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Tone, Variant,
 } from "widgets.slint";
-import { CertRow, RecipientRow, SignatureRow } from "types.slint";
-import { DecryptVerifyDialog, KeygenDialog, SignEncryptDialog } from "dialogs.slint";
+import { CertRow, CertificationRow, RecipientRow, SignatureRow, UserIdRow } from "types.slint";
+import { CertifyDialog, DecryptVerifyDialog, KeygenDialog, SignEncryptDialog } from "dialogs.slint";
 
-export { CertRow, RecipientRow, SignatureRow }
+export { CertRow, CertificationRow, RecipientRow, SignatureRow, UserIdRow }
 
 component RailItem inherits Rectangle {
     in property <string> text;
@@ -114,6 +114,15 @@ component CertListRow inherits Rectangle {
                 spacing: 6px;
                 alignment: end;
 
+                // Only shown once there is something to say. An "unverified"
+                // badge on every stranger in the list would be noise, and the
+                // details pane spells it out anyway.
+                if root.cert.authentication != "unverified": Pill {
+                    text: root.cert.authentication;
+                    tone: root.cert.authentication == "verified" ? Tone.ok : Tone.warn;
+                    glyph: Icons.certify;
+                }
+
                 if root.cert.has-secret: Pill {
                     text: "secret key";
                     tone: Tone.accent;
@@ -205,6 +214,19 @@ export component AppWindow inherits Window {
     callback dv-pick-input();
     callback dv-pick-data();
     callback dv-run(string);
+
+    // --- Certify / trust --------------------------------------------------
+    in property <[CertificationRow]> detail-certifications;
+    in property <bool> can-certify: false;
+    in-out property <bool> certify-open: false;
+    in property <string> certify-target: "";
+    in property <[UserIdRow]> certify-user-ids;
+    in property <[string]> certify-certifiers;
+    in property <int> certify-chosen: 0;
+    callback open-certify();
+    callback certify-toggle-user-id(int);
+    callback certify-run(int, bool, bool, int, string);
+    callback toggle-trust-root();
 
     VerticalLayout {
         spacing: 0px;
@@ -453,7 +475,12 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    if root.has-selection: VerticalLayout {
+                    // Scrolls: the trust section grows with however many
+                    // certifications and user IDs a certificate has collected,
+                    // and the actions at the bottom must stay reachable.
+                    if root.has-selection: ScrollView {
+                    VerticalLayout {
+                        width: parent.visible-width;
                         padding: Theme.s5;
                         spacing: Theme.s4;
                         alignment: start;
@@ -532,21 +559,107 @@ export component AppWindow inherits Window {
 
                         Divider { }
 
-                        HorizontalLayout {
+                        SectionLabel { text: "TRUST"; }
+
+                        Text {
+                            text: root.detail.authentication == "verified"
+                                ? "The web of trust confirms this identity."
+                                : root.detail.authentication == "partly verified"
+                                    ? "Some evidence for this identity, but not enough to rely on."
+                                    : "Nothing vouches for this identity yet.";
+                            color: Theme.text-dim;
+                            font-size: Theme.t-sm;
+                            wrap: word-wrap;
+                        }
+
+                        Check {
+                            // Kept short: the checkbox label does not wrap, and
+                            // the panel is narrow. The line below carries the
+                            // explanation.
+                            text: "Trust root";
+                            checked: root.detail.is-trust-root || root.detail.has-secret;
+                            // Own keys are roots implicitly and cannot be
+                            // un-rooted from here.
+                            enabled: !root.busy && !root.detail.has-secret;
+                            toggled => { root.toggle-trust-root(); }
+                        }
+
+                        Text {
+                            text: root.detail.has-secret
+                                ? "Your own keys are always trust roots."
+                                : "Certifications made by this key count as evidence.";
+                            color: Theme.text-faint;
+                            font-size: Theme.t-sm;
+                            wrap: word-wrap;
+                        }
+
+                        if root.detail-certifications.length == 0: Text {
+                            text: "No certifications.";
+                            color: Theme.text-faint;
+                            font-size: Theme.t-sm;
+                        }
+
+                        for entry in root.detail-certifications: HorizontalLayout {
                             spacing: Theme.s2;
-                            Btn {
-                                text: "Export…";
-                                glyph: Icons.arrow-out;
-                                enabled: !root.busy;
-                                clicked => { root.export-selected(); }
+                            alignment: start;
+
+                            Icon {
+                                glyph: entry.good ? Icons.certify : Icons.cross;
+                                tint: entry.good ? Theme.ok : Theme.text-faint;
+                                width: 14px;
+                                height: 14px;
+                                y: 2px;
                             }
-                            Btn {
-                                text: "Encrypt to…";
-                                glyph: Icons.lock;
-                                enabled: !root.busy;
-                                clicked => { root.open-sign-encrypt(); }
+
+                            VerticalLayout {
+                                spacing: 1px;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: entry.by-me ? entry.certifier + " (you)" : entry.certifier;
+                                    color: Theme.text;
+                                    font-size: Theme.t-sm;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: entry.detail;
+                                    color: Theme.text-faint;
+                                    font-size: Theme.t-xs;
+                                    wrap: word-wrap;
+                                }
                             }
                         }
+
+                        Divider { }
+
+                        VerticalLayout {
+                            spacing: Theme.s2;
+
+                            Btn {
+                                text: "Certify identity…";
+                                glyph: Icons.certify;
+                                variant: Variant.primary;
+                                wide: true;
+                                enabled: !root.busy && root.can-certify && !root.detail.has-secret;
+                                clicked => { root.open-certify(); }
+                            }
+
+                            HorizontalLayout {
+                                spacing: Theme.s2;
+                                Btn {
+                                    text: "Export…";
+                                    glyph: Icons.arrow-out;
+                                    enabled: !root.busy;
+                                    clicked => { root.export-selected(); }
+                                }
+                                Btn {
+                                    text: "Encrypt to…";
+                                    glyph: Icons.lock;
+                                    enabled: !root.busy;
+                                    clicked => { root.open-sign-encrypt(); }
+                                }
+                            }
+                        }
+                    }
                     }
                 }
             }
@@ -612,6 +725,19 @@ export component AppWindow inherits Window {
         toggle-recipient(index) => { root.se-toggle-recipient(index); }
         run(encrypt, sign, signer, password) => {
             root.se-run(encrypt, sign, signer, password);
+        }
+    }
+
+    if root.certify-open: CertifyDialog {
+        busy: root.busy;
+        target-name: root.certify-target;
+        user-ids: root.certify-user-ids;
+        certifiers: root.certify-certifiers;
+        chosen-count: root.certify-chosen;
+        dismissed => { root.certify-open = false; }
+        toggle-user-id(index) => { root.certify-toggle-user-id(index); }
+        run(certifier, publishable, introducer, confidence, password) => {
+            root.certify-run(certifier, publishable, introducer, confidence, password);
         }
     }
 
