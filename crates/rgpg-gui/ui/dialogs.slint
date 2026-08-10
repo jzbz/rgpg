@@ -1,0 +1,474 @@
+import { ListView } from "std-widgets.slint";
+import { Theme, Icons, Icon } from "theme.slint";
+import { Btn, Check, DialogShell, Divider, Field, Monogram, Pill, Select, Tone, Variant } from "widgets.slint";
+import { RecipientRow, SignatureRow } from "types.slint";
+
+// A file slot: label, the chosen path (or a hint), and a Choose button.
+component FilePick inherits VerticalLayout {
+    in property <string> label;
+    in property <string> path;
+    in property <string> hint: "No file chosen";
+    in property <bool> enabled: true;
+    callback pick();
+
+    spacing: 6px;
+
+    Text {
+        text: root.label;
+        color: Theme.text-dim;
+        font-size: Theme.t-sm;
+    }
+
+    Rectangle {
+        height: 40px;
+        background: Theme.surface-sunken;
+        border-radius: Theme.r-sm;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        HorizontalLayout {
+            padding-left: Theme.s3;
+            padding-right: Theme.s1;
+            spacing: Theme.s2;
+
+            Icon {
+                glyph: Icons.file;
+                tint: root.path == "" ? Theme.text-faint : Theme.accent;
+                y: (parent.height - self.height) / 2;
+            }
+
+            Text {
+                text: root.path == "" ? root.hint : root.path;
+                color: root.path == "" ? Theme.text-faint : Theme.text;
+                font-size: Theme.t-md;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+
+            Btn {
+                text: "Choose…";
+                variant: Variant.ghost;
+                enabled: root.enabled;
+                y: (parent.height - self.height) / 2;
+                clicked => { root.pick(); }
+            }
+        }
+    }
+}
+
+export component KeygenDialog inherits DialogShell {
+    in property <bool> busy;
+    callback accepted(string, string, string, int, int);
+
+    title: "New key pair";
+    subtitle: "The passphrase protects the secret key on disk. It cannot be recovered.";
+    card-width: 470px;
+
+    VerticalLayout {
+        spacing: Theme.s3;
+
+        name-input := Field { placeholder: "Name"; enabled: !root.busy; }
+        email-input := Field { placeholder: "name@example.org"; enabled: !root.busy; }
+        pass-input := Field { placeholder: "Passphrase (optional)"; secret: true; enabled: !root.busy; }
+
+        HorizontalLayout {
+            spacing: Theme.s3;
+
+            VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Key type";
+                    color: Theme.text-dim;
+                    font-size: Theme.t-sm;
+                }
+                key-type := Select {
+                    model: ["Curve 25519 (recommended)", "RSA 3072", "RSA 4096"];
+                    enabled: !root.busy;
+                }
+            }
+
+            VerticalLayout {
+                spacing: 6px;
+                width: 130px;
+                Text {
+                    text: "Expires";
+                    color: Theme.text-dim;
+                    font-size: Theme.t-sm;
+                }
+                expiry := Select {
+                    model: ["in 2 years", "in 1 year", "in 5 years", "never"];
+                    enabled: !root.busy;
+                }
+            }
+        }
+
+        Divider { }
+
+        HorizontalLayout {
+            spacing: Theme.s2;
+            alignment: end;
+
+            Btn {
+                text: "Cancel";
+                variant: Variant.ghost;
+                enabled: !root.busy;
+                clicked => { root.dismissed(); }
+            }
+            Btn {
+                text: root.busy ? "Generating…" : "Create key pair";
+                variant: Variant.primary;
+                enabled: !root.busy && name-input.text != "" && email-input.text != "";
+                clicked => {
+                    root.accepted(
+                        name-input.text,
+                        email-input.text,
+                        pass-input.text,
+                        key-type.current,
+                        expiry.current,
+                    );
+                }
+            }
+        }
+    }
+}
+
+export component SignEncryptDialog inherits DialogShell {
+    in property <string> input-path;
+    in property <string> output-encrypt;
+    in property <string> output-sign;
+    in property <[RecipientRow]> recipients;
+    in property <[string]> signers;
+    in property <bool> busy;
+    callback pick-input();
+    callback toggle-recipient(int);
+    callback run(bool, bool, int, string);
+
+    // Held on the dialog rather than read off the widgets: both the passphrase
+    // field and the signer dropdown live inside `if` blocks, and a conditional
+    // element cannot be referenced from the footer.
+    property <string> password;
+    property <int> signer-index: 0;
+
+    // Counted in Rust: Slint has no way to fold over a model in an expression.
+    in property <int> chosen-recipients: 0;
+
+    property <bool> want-encrypt: true;
+    property <bool> want-sign: true;
+    property <bool> can-run:
+        root.input-path != ""
+        && (root.want-encrypt || root.want-sign)
+        && (!root.want-encrypt || root.chosen-recipients > 0)
+        && (!root.want-sign || root.signers.length > 0);
+
+    title: "Sign / Encrypt file";
+    card-width: 540px;
+
+    VerticalLayout {
+        spacing: Theme.s4;
+
+        FilePick {
+            label: "File";
+            path: root.input-path;
+            enabled: !root.busy;
+            pick => { root.pick-input(); }
+        }
+
+        HorizontalLayout {
+            spacing: Theme.s5;
+            Check {
+                text: "Encrypt";
+                checked: root.want-encrypt;
+                enabled: !root.busy;
+                toggled => { root.want-encrypt = !root.want-encrypt; }
+            }
+            Check {
+                text: "Sign";
+                checked: root.want-sign;
+                enabled: !root.busy && root.signers.length > 0;
+                toggled => { root.want-sign = !root.want-sign; }
+            }
+        }
+
+        if root.want-encrypt: VerticalLayout {
+            spacing: 6px;
+
+            HorizontalLayout {
+                Text {
+                    text: "Recipients";
+                    color: Theme.text-dim;
+                    font-size: Theme.t-sm;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: root.chosen-recipients == 0
+                        ? "none selected"
+                        : "\{root.chosen-recipients} selected";
+                    color: root.chosen-recipients == 0 ? Theme.warn : Theme.text-dim;
+                    font-size: Theme.t-sm;
+                }
+            }
+
+            Rectangle {
+                height: 168px;
+                background: Theme.surface-sunken;
+                border-radius: Theme.r-sm;
+                border-width: 1px;
+                border-color: Theme.border;
+                clip: true;
+
+                if root.recipients.length == 0: Text {
+                    text: "No certificate in the store can receive encrypted mail.";
+                    color: Theme.text-faint;
+                    font-size: Theme.t-sm;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    width: parent.width - 2 * Theme.s4;
+                }
+
+                if root.recipients.length > 0: ListView {
+                    for entry[index] in root.recipients: Rectangle {
+                        height: 42px;
+                        background: pick.has-hover ? Theme.hover : transparent;
+
+                        HorizontalLayout {
+                            padding-left: Theme.s3;
+                            padding-right: Theme.s3;
+                            spacing: Theme.s3;
+
+                            Rectangle {
+                                width: 17px;
+                                height: 17px;
+                                y: (parent.height - self.height) / 2;
+                                border-radius: 5px;
+                                background: entry.selected ? Theme.accent : Theme.surface;
+                                border-width: 1px;
+                                border-color: entry.selected ? Theme.accent : Theme.border-strong;
+                                if entry.selected: Icon {
+                                    glyph: Icons.check;
+                                    tint: Theme.accent-ink;
+                                    width: 12px;
+                                    height: 12px;
+                                    weight: 3px;
+                                }
+                            }
+
+                            Monogram {
+                                initials: entry.initials;
+                                tint: Theme.monograms[entry.tint-index];
+                                size: 26px;
+                                y: (parent.height - self.height) / 2;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text {
+                                    text: entry.label;
+                                    color: Theme.text;
+                                    font-size: Theme.t-md;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: entry.sublabel;
+                                    color: Theme.text-faint;
+                                    font-size: Theme.t-xs;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        pick := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            clicked => { root.toggle-recipient(index); }
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.want-sign && root.signers.length > 0: VerticalLayout {
+            spacing: 6px;
+            Text {
+                text: "Sign as";
+                color: Theme.text-dim;
+                font-size: Theme.t-sm;
+            }
+            Select {
+                model: root.signers;
+                enabled: !root.busy;
+                current: root.signer-index;
+                changed(index) => { root.signer-index = index; }
+            }
+        }
+
+        if root.want-sign: Field {
+            placeholder: "Passphrase for the signing key (if any)";
+            secret: true;
+            enabled: !root.busy;
+            edited(text) => { root.password = text; }
+        }
+
+        if root.input-path != "": Text {
+            text: "Writes " + (root.want-encrypt ? root.output-encrypt : root.output-sign);
+            color: Theme.text-faint;
+            font-size: Theme.t-sm;
+            overflow: elide;
+        }
+
+        Divider { }
+
+        HorizontalLayout {
+            spacing: Theme.s2;
+            alignment: end;
+            Btn {
+                text: "Cancel";
+                variant: Variant.ghost;
+                enabled: !root.busy;
+                clicked => { root.dismissed(); }
+            }
+            Btn {
+                text: root.busy ? "Working…" : "Run";
+                variant: Variant.primary;
+                enabled: !root.busy && root.can-run;
+                clicked => {
+                    root.run(
+                        root.want-encrypt,
+                        root.want-sign,
+                        root.signer-index,
+                        root.password,
+                    );
+                }
+            }
+        }
+    }
+}
+
+export component DecryptVerifyDialog inherits DialogShell {
+    in property <string> input-path;
+    in property <string> data-path;
+    in property <bool> needs-data;
+    in property <string> output-path;
+    in property <[SignatureRow]> signatures;
+    in property <string> result;
+    // 0 nothing yet, 1 good, 2 mixed, 3 bad
+    in property <int> result-tone;
+    in property <bool> busy;
+    callback pick-input();
+    callback pick-data();
+    callback run(string);
+
+    property <string> password;
+    property <bool> can-run:
+        root.input-path != "" && (!root.needs-data || root.data-path != "");
+
+    title: "Decrypt / Verify";
+    card-width: 540px;
+
+    VerticalLayout {
+        spacing: Theme.s4;
+
+        FilePick {
+            label: "Message or signature";
+            path: root.input-path;
+            enabled: !root.busy;
+            pick => { root.pick-input(); }
+        }
+
+        if root.needs-data: FilePick {
+            label: "Signed file";
+            hint: "This is a detached signature — choose the file it signs";
+            path: root.data-path;
+            enabled: !root.busy;
+            pick => { root.pick-data(); }
+        }
+
+        if !root.needs-data && root.input-path != "": Field {
+            placeholder: "Passphrase for the secret key (if any)";
+            secret: true;
+            enabled: !root.busy;
+            edited(text) => { root.password = text; }
+        }
+
+        if root.output-path != "" && !root.needs-data: Text {
+            text: "Writes " + root.output-path;
+            color: Theme.text-faint;
+            font-size: Theme.t-sm;
+            overflow: elide;
+        }
+
+        if root.result != "": Rectangle {
+            background: root.result-tone == 1 ? Theme.ok-soft
+                : root.result-tone == 2 ? Theme.warn-soft
+                : Theme.danger-soft;
+            border-radius: Theme.r-md;
+
+            VerticalLayout {
+                padding: Theme.s3;
+                spacing: Theme.s2;
+
+                HorizontalLayout {
+                    spacing: Theme.s2;
+                    Icon {
+                        glyph: root.result-tone == 1 ? Icons.check : Icons.cross;
+                        tint: root.result-tone == 1 ? Theme.ok
+                            : root.result-tone == 2 ? Theme.warn
+                            : Theme.danger;
+                        weight: 2.4px;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: root.result;
+                        color: root.result-tone == 1 ? Theme.ok
+                            : root.result-tone == 2 ? Theme.warn
+                            : Theme.danger;
+                        font-size: Theme.t-md;
+                        font-weight: Theme.w-medium;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                }
+
+                for signature in root.signatures: HorizontalLayout {
+                    spacing: Theme.s2;
+                    padding-left: 24px;
+                    Pill {
+                        text: signature.good ? "good" : "bad";
+                        tone: signature.good ? Tone.ok : Tone.danger;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    Text {
+                        text: signature.good
+                            ? signature.signer
+                            : (signature.detail == "" ? signature.signer : signature.detail);
+                        color: Theme.text;
+                        font-size: Theme.t-sm;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
+        }
+
+        Divider { }
+
+        HorizontalLayout {
+            spacing: Theme.s2;
+            alignment: end;
+            Btn {
+                text: root.result == "" ? "Cancel" : "Close";
+                variant: Variant.ghost;
+                enabled: !root.busy;
+                clicked => { root.dismissed(); }
+            }
+            Btn {
+                text: root.busy ? "Working…" : (root.needs-data ? "Verify" : "Decrypt");
+                variant: Variant.primary;
+                enabled: !root.busy && root.can-run;
+                clicked => { root.run(root.password); }
+            }
+        }
+    }
+}

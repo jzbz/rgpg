@@ -6,7 +6,7 @@ members = ["crates/rgpg-core", "crates/rgpg-gui"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-license = "GPL-3.0-only"
+license = "MIT"
 repository = "https://github.com/jzbz/rgpg"
 
 [workspace.dependencies]

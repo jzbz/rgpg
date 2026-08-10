@@ -2,26 +2,75 @@
 // macOS today, but the attribute is free and keeps a cross-compile honest.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rgpg_core::cert::format_time;
 use rgpg_core::keygen::{self, KeyGenRequest, KeyType};
+use rgpg_core::ops::{self, InputKind, VerifyResult};
 use rgpg_core::{CertSummary, Store};
-use slint::{ModelRc, SharedString, StandardListViewItem, VecModel};
+use slint::{ModelRc, SharedString, VecModel};
 
 slint::include_modules!();
 
+/// Which slice of the store the list is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    All,
+    Mine,
+    Others,
+}
+
+impl Scope {
+    fn from_index(index: i32) -> Self {
+        match index {
+            1 => Scope::Mine,
+            2 => Scope::Others,
+            _ => Scope::All,
+        }
+    }
+
+    fn accepts(self, cert: &CertSummary) -> bool {
+        match self {
+            Scope::All => true,
+            Scope::Mine => cert.has_secret,
+            Scope::Others => !cert.has_secret,
+        }
+    }
+}
+
+/// A certificate offered as an encryption recipient, plus whether it is ticked.
+struct Recipient {
+    fingerprint: String,
+    label: String,
+    sublabel: String,
+    initials: String,
+    tint: i32,
+    selected: bool,
+}
+
 /// Everything the callbacks share.
 ///
-/// `all` is the store's contents; `shown` is what the table is displaying after
-/// the search filter. The table's row index refers to `shown`, so the two must
-/// only ever be rebuilt together — see [`reload`] and [`apply_filter`].
+/// `all` is the store's contents; `shown` is what the list is displaying after
+/// the scope and search filters. A row index from the UI refers to `shown`, so
+/// the two are only ever rebuilt together — see [`reload`] and [`apply_filter`].
 struct State {
     store: Store,
     all: Vec<CertSummary>,
     shown: Vec<CertSummary>,
     filter: String,
+    scope: Scope,
+
+    se_input: Option<PathBuf>,
+    se_recipients: Vec<Recipient>,
+    /// (fingerprint, label) of every certificate that can sign and has a
+    /// secret key in the store.
+    se_signers: Vec<(String, String)>,
+
+    dv_input: Option<PathBuf>,
+    dv_data: Option<PathBuf>,
+    dv_kind: InputKind,
 }
 
 type Shared = Arc<Mutex<State>>;
@@ -42,10 +91,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         all: Vec::new(),
         shown: Vec::new(),
         filter: String::new(),
+        scope: Scope::All,
+        se_input: None,
+        se_recipients: Vec::new(),
+        se_signers: Vec::new(),
+        dv_input: None,
+        dv_data: None,
+        dv_kind: InputKind::NotOpenPgp,
     }));
 
     reload(&ui, &state);
+    wire_list(&ui, &state);
+    wire_keygen(&ui, &state);
+    wire_sign_encrypt(&ui, &state);
+    wire_decrypt_verify(&ui, &state);
 
+    ui.run()?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------- list pane
+
+fn wire_list(ui: &AppWindow, state: &Shared) {
     ui.on_refresh({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move || {
@@ -63,7 +130,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    ui.on_row_changed({
+    ui.on_scope_changed({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |index| {
+            let ui = ui_weak.unwrap();
+            state.lock().unwrap().scope = Scope::from_index(index);
+            apply_filter(&ui, &state);
+        }
+    });
+
+    ui.on_row_selected({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |row| {
             let ui = ui_weak.unwrap();
@@ -145,7 +221,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
     });
+}
 
+// ------------------------------------------------------------- key generation
+
+fn wire_keygen(ui: &AppWindow, state: &Shared) {
     ui.on_generate_key({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
         move |name, email, password, key_type, expiry| {
@@ -187,9 +267,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
     });
-
-    ui.run()?;
-    Ok(())
 }
 
 fn expiry_from_index(index: i32) -> Option<Duration> {
@@ -202,7 +279,414 @@ fn expiry_from_index(index: i32) -> Option<Duration> {
     }
 }
 
-/// Re-read the store from disk and rebuild the table.
+// ------------------------------------------------------------- sign / encrypt
+
+fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
+    ui.on_open_sign_encrypt({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let ui = ui_weak.unwrap();
+            let mut guard = state.lock().unwrap();
+
+            // Anyone who can receive encrypted mail is a candidate recipient;
+            // whatever is selected in the list starts ticked.
+            let preselect = usize::try_from(ui.get_current_row())
+                .ok()
+                .and_then(|r| guard.shown.get(r))
+                .map(|s| s.fingerprint.clone());
+
+            let recipients: Vec<Recipient> = guard
+                .all
+                .iter()
+                .filter(|c| c.can_encrypt)
+                .map(|c| {
+                    let (name, email) = split_user_id(&c.primary_user_id);
+                    Recipient {
+                        selected: preselect.as_deref() == Some(c.fingerprint.as_str()),
+                        initials: initials(&name, &email, &c.key_id),
+                        tint: tint_index(&c.fingerprint),
+                        label: if name.is_empty() {
+                            c.primary_user_id.clone()
+                        } else {
+                            name
+                        },
+                        sublabel: if email.is_empty() {
+                            c.key_id.clone()
+                        } else {
+                            email
+                        },
+                        fingerprint: c.fingerprint.clone(),
+                    }
+                })
+                .collect();
+
+            let signers: Vec<(String, String)> = guard
+                .all
+                .iter()
+                .filter(|c| c.has_secret && c.can_sign)
+                .map(|c| (c.fingerprint.clone(), c.primary_user_id.clone()))
+                .collect();
+
+            guard.se_recipients = recipients;
+            guard.se_signers = signers;
+
+            push_sign_encrypt(&ui, &guard);
+            drop(guard);
+            ui.set_signenc_open(true);
+        }
+    });
+
+    ui.on_se_pick_input({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let _ = slint::spawn_local(async move {
+                let Some(file) = rfd::AsyncFileDialog::new()
+                    .set_title("File to sign or encrypt")
+                    .pick_file()
+                    .await
+                else {
+                    return;
+                };
+                let ui = ui_weak.unwrap();
+                let mut guard = state.lock().unwrap();
+                guard.se_input = Some(file.path().to_path_buf());
+                push_sign_encrypt(&ui, &guard);
+            });
+        }
+    });
+
+    ui.on_se_toggle_recipient({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |index| {
+            let ui = ui_weak.unwrap();
+            let mut guard = state.lock().unwrap();
+            if let Some(entry) = usize::try_from(index)
+                .ok()
+                .and_then(|i| guard.se_recipients.get_mut(i))
+            {
+                entry.selected = !entry.selected;
+            }
+            push_sign_encrypt(&ui, &guard);
+        }
+    });
+
+    ui.on_se_run({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |encrypt, sign, signer_index, password| {
+            let ui = ui_weak.unwrap();
+            ui.set_busy(true);
+            ui.set_status(if encrypt { "Encrypting…" } else { "Signing…" }.into());
+
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let password = password.to_string();
+            std::thread::spawn(move || {
+                let outcome = run_sign_encrypt(&state, encrypt, sign, signer_index, &password);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let ui = ui_weak.unwrap();
+                    ui.set_busy(false);
+                    match outcome {
+                        Ok(output) => {
+                            ui.set_signenc_open(false);
+                            ui.set_status(format!("Wrote {}", output.display()).into());
+                        }
+                        Err(message) => ui.set_status(message.into()),
+                    }
+                });
+            });
+        }
+    });
+}
+
+/// The blocking half of Sign / Encrypt, run on a worker thread.
+fn run_sign_encrypt(
+    state: &Shared,
+    encrypt: bool,
+    sign: bool,
+    signer_index: i32,
+    password: &str,
+) -> Result<PathBuf, String> {
+    let guard = state.lock().unwrap();
+
+    let input = guard
+        .se_input
+        .clone()
+        .ok_or_else(|| "Choose a file first".to_string())?;
+    let password = Some(password).filter(|p| !p.is_empty());
+
+    // The signer is resolved from the *secret* store: cert-d only holds the
+    // public half, which cannot produce a signature.
+    let signer = if sign {
+        let (fingerprint, _) = guard
+            .se_signers
+            .get(signer_index.max(0) as usize)
+            .ok_or_else(|| "Choose a key to sign with".to_string())?;
+        Some(
+            guard
+                .store
+                .secret_cert(fingerprint)
+                .map_err(|e| format!("Signing key unavailable: {e}"))?,
+        )
+    } else {
+        None
+    };
+
+    if encrypt {
+        let mut recipients = Vec::new();
+        for entry in guard.se_recipients.iter().filter(|r| r.selected) {
+            recipients.push(
+                guard
+                    .store
+                    .lookup(&entry.fingerprint)
+                    .map_err(|e| format!("Recipient {} unavailable: {e}", entry.label))?,
+            );
+        }
+        if recipients.is_empty() {
+            return Err("Select at least one recipient".to_string());
+        }
+
+        let output = ops::encrypted_name(&input);
+        ops::encrypt_file(
+            &recipients,
+            signer.as_ref().map(|cert| (cert, password)),
+            &input,
+            &output,
+        )
+        .map_err(|e| format!("Encryption failed: {e}"))?;
+        Ok(output)
+    } else {
+        let signer = signer.ok_or_else(|| "Nothing to do: tick Encrypt or Sign".to_string())?;
+        let output = ops::signature_name(&input);
+        ops::sign_detached_file(&signer, password, &input, &output)
+            .map_err(|e| format!("Signing failed: {e}"))?;
+        Ok(output)
+    }
+}
+
+fn push_sign_encrypt(ui: &AppWindow, state: &State) {
+    let rows: Vec<RecipientRow> = state
+        .se_recipients
+        .iter()
+        .map(|r| RecipientRow {
+            fingerprint: r.fingerprint.clone().into(),
+            label: r.label.clone().into(),
+            sublabel: r.sublabel.clone().into(),
+            initials: r.initials.clone().into(),
+            tint_index: r.tint,
+            selected: r.selected,
+        })
+        .collect();
+
+    let signers: Vec<SharedString> = state
+        .se_signers
+        .iter()
+        .map(|(_, label)| SharedString::from(label.as_str()))
+        .collect();
+
+    ui.set_se_selected_count(state.se_recipients.iter().filter(|r| r.selected).count() as i32);
+    ui.set_se_recipients(ModelRc::new(VecModel::from(rows)));
+    ui.set_se_signers(ModelRc::new(VecModel::from(signers)));
+
+    match &state.se_input {
+        Some(path) => {
+            ui.set_se_input(path.display().to_string().into());
+            ui.set_se_output_encrypt(ops::encrypted_name(path).display().to_string().into());
+            ui.set_se_output_sign(ops::signature_name(path).display().to_string().into());
+        }
+        None => {
+            ui.set_se_input(SharedString::new());
+            ui.set_se_output_encrypt(SharedString::new());
+            ui.set_se_output_sign(SharedString::new());
+        }
+    }
+}
+
+// ----------------------------------------------------------- decrypt / verify
+
+fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
+    ui.on_open_decrypt_verify({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let ui = ui_weak.unwrap();
+            let mut guard = state.lock().unwrap();
+            guard.dv_input = None;
+            guard.dv_data = None;
+            guard.dv_kind = InputKind::NotOpenPgp;
+            ui.set_dv_result(SharedString::new());
+            ui.set_dv_tone(0);
+            ui.set_dv_signatures(ModelRc::new(VecModel::from(Vec::<SignatureRow>::new())));
+            push_decrypt_verify(&ui, &guard);
+            ui.set_verify_open(true);
+        }
+    });
+
+    ui.on_dv_pick_input({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let _ = slint::spawn_local(async move {
+                let Some(file) = rfd::AsyncFileDialog::new()
+                    .set_title("Encrypted message or signature")
+                    .add_filter("OpenPGP", &["asc", "pgp", "gpg", "sig", "signature"])
+                    .add_filter("All files", &["*"])
+                    .pick_file()
+                    .await
+                else {
+                    return;
+                };
+
+                let path = file.path().to_path_buf();
+                // Reading the head of the file decides whether the dialog has
+                // to ask for the signed file as well.
+                let kind = std::fs::read(&path)
+                    .map(|bytes| ops::classify(&bytes))
+                    .unwrap_or(InputKind::NotOpenPgp);
+
+                let ui = ui_weak.unwrap();
+                let mut guard = state.lock().unwrap();
+                guard.dv_input = Some(path);
+                guard.dv_kind = kind;
+                ui.set_dv_result(SharedString::new());
+                ui.set_dv_tone(0);
+                push_decrypt_verify(&ui, &guard);
+            });
+        }
+    });
+
+    ui.on_dv_pick_data({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let _ = slint::spawn_local(async move {
+                let Some(file) = rfd::AsyncFileDialog::new()
+                    .set_title("File the signature covers")
+                    .pick_file()
+                    .await
+                else {
+                    return;
+                };
+                let ui = ui_weak.unwrap();
+                let mut guard = state.lock().unwrap();
+                guard.dv_data = Some(file.path().to_path_buf());
+                push_decrypt_verify(&ui, &guard);
+            });
+        }
+    });
+
+    ui.on_dv_run({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |password| {
+            let ui = ui_weak.unwrap();
+            ui.set_busy(true);
+            ui.set_status("Working…".into());
+
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let password = password.to_string();
+            std::thread::spawn(move || {
+                let outcome = run_decrypt_verify(&state, &password);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let ui = ui_weak.unwrap();
+                    ui.set_busy(false);
+                    match outcome {
+                        Ok((summary, tone, result)) => {
+                            let rows: Vec<SignatureRow> = result
+                                .signatures
+                                .iter()
+                                .map(|s| SignatureRow {
+                                    good: s.good,
+                                    signer: s.signer.clone().into(),
+                                    detail: s.detail.clone().into(),
+                                })
+                                .collect();
+                            ui.set_dv_signatures(ModelRc::new(VecModel::from(rows)));
+                            ui.set_dv_result(summary.clone().into());
+                            ui.set_dv_tone(tone);
+                            ui.set_status(summary.into());
+                        }
+                        Err(message) => {
+                            ui.set_dv_signatures(ModelRc::new(VecModel::from(
+                                Vec::<SignatureRow>::new(),
+                            )));
+                            ui.set_dv_result(message.clone().into());
+                            ui.set_dv_tone(3);
+                            ui.set_status(message.into());
+                        }
+                    }
+                });
+            });
+        }
+    });
+}
+
+/// The blocking half of Decrypt / Verify. Returns a summary line, a tone for
+/// the result banner (1 good, 2 needs attention, 3 bad) and the signatures.
+fn run_decrypt_verify(state: &Shared, password: &str) -> Result<(String, i32, VerifyResult), String> {
+    let guard = state.lock().unwrap();
+
+    let input = guard
+        .dv_input
+        .clone()
+        .ok_or_else(|| "Choose a file first".to_string())?;
+
+    if guard.dv_kind == InputKind::DetachedSignature {
+        let data = guard
+            .dv_data
+            .clone()
+            .ok_or_else(|| "Choose the file the signature covers".to_string())?;
+
+        let result = ops::verify_detached_files(&guard.store, &input, &data)
+            .map_err(|e| format!("Verification failed: {e}"))?;
+
+        let summary = if result.signatures.is_empty() {
+            ("The file contains no signature".to_string(), 2)
+        } else if result.all_good() {
+            ("Signature verified".to_string(), 1)
+        } else {
+            ("Signature is NOT valid".to_string(), 3)
+        };
+        return Ok((summary.0, summary.1, result));
+    }
+
+    let output = ops::decrypted_name(&input);
+    let result = ops::decrypt_file(
+        &guard.store,
+        &input,
+        Some(password).filter(|p| !p.is_empty()),
+        &output,
+    )
+    .map_err(|e| format!("Decryption failed: {e}"))?;
+
+    let written = format!("Decrypted to {}", output.display());
+    let summary = if result.signatures.is_empty() {
+        (format!("{written}. The message was not signed."), 2)
+    } else if result.all_good() {
+        (format!("{written}, signature verified"), 1)
+    } else {
+        (format!("{written}, but a signature is NOT valid"), 3)
+    };
+    Ok((summary.0, summary.1, result))
+}
+
+fn push_decrypt_verify(ui: &AppWindow, state: &State) {
+    ui.set_dv_needs_data(state.dv_kind == InputKind::DetachedSignature);
+
+    ui.set_dv_input(match &state.dv_input {
+        Some(path) => path.display().to_string().into(),
+        None => SharedString::new(),
+    });
+    ui.set_dv_data(match &state.dv_data {
+        Some(path) => path.display().to_string().into(),
+        None => SharedString::new(),
+    });
+    ui.set_dv_output(match &state.dv_input {
+        Some(path) => ops::decrypted_name(path).display().to_string().into(),
+        None => SharedString::new(),
+    });
+}
+
+// ------------------------------------------------------------------- plumbing
+
+/// Re-read the store from disk and rebuild the list.
 fn reload(ui: &AppWindow, state: &Shared) {
     let mut guard = state.lock().unwrap();
 
@@ -215,10 +699,6 @@ fn reload(ui: &AppWindow, state: &Shared) {
     };
 
     guard.all = certs.iter().map(CertSummary::from_cert).collect();
-    // A stable order beats cert-d's directory order, which is by fingerprint.
-    guard
-        .all
-        .sort_by(|a, b| a.primary_user_id.to_lowercase().cmp(&b.primary_user_id.to_lowercase()));
 
     // The secret half lives outside cert-d, so ask the store which ones it has.
     let State { store, all, .. } = &mut *guard;
@@ -226,82 +706,67 @@ fn reload(ui: &AppWindow, state: &Shared) {
         summary.has_secret = store.has_secret(&summary.fingerprint);
     }
 
+    // A stable order beats cert-d's, which is by fingerprint. Own keys first:
+    // they are the ones a user reaches for.
+    guard.all.sort_by(|a, b| {
+        b.has_secret.cmp(&a.has_secret).then_with(|| {
+            a.primary_user_id
+                .to_lowercase()
+                .cmp(&b.primary_user_id.to_lowercase())
+        })
+    });
+
     drop(guard);
     apply_filter(ui, state);
 }
 
-/// Rebuild `shown` and the table model from the current filter.
+/// Rebuild `shown` and the list model from the current scope and search text.
 fn apply_filter(ui: &AppWindow, state: &Shared) {
     let mut guard = state.lock().unwrap();
 
-    let filter = guard.filter.clone();
+    let (filter, scope) = (guard.filter.clone(), guard.scope);
     guard.shown = guard
         .all
         .iter()
-        .filter(|c| c.matches(&filter))
+        .filter(|c| scope.accepts(c) && c.matches(&filter))
         .cloned()
         .collect();
 
-    let rows: Vec<ModelRc<StandardListViewItem>> = guard
-        .shown
-        .iter()
-        .map(|c| {
-            let (name, email) = split_user_id(&c.primary_user_id);
-            let cells: Vec<StandardListViewItem> = [
-                name,
-                email,
-                format_time(Some(c.created)),
-                format_time(c.expires),
-                c.key_id.clone(),
-                c.algorithm.clone(),
-                c.capabilities(),
-                if c.has_secret { "yes".into() } else { String::new() },
-            ]
-            .into_iter()
-            .map(|text| StandardListViewItem::from(SharedString::from(text)))
-            .collect();
-            ModelRc::new(VecModel::from(cells))
-        })
-        .collect();
-
+    let rows: Vec<CertRow> = guard.shown.iter().map(to_row).collect();
     let total = guard.all.len();
-    let shown = guard.shown.len();
-    let secret = guard.all.iter().filter(|c| c.has_secret).count();
+    let mine = guard.all.iter().filter(|c| c.has_secret).count();
+    let shown = rows.len();
     drop(guard);
 
-    let model = VecModel::from(rows);
-    ui.set_rows(ModelRc::new(model));
+    ui.set_certs(ModelRc::new(VecModel::from(rows)));
+    ui.set_count_all(total as i32);
+    ui.set_count_mine(mine as i32);
+    ui.set_count_others((total - mine) as i32);
 
-    // The old selection index is meaningless against a new row set.
+    // The old row index is meaningless against a new row set.
     ui.set_current_row(-1);
     ui.set_has_selection(false);
     ui.set_status(
         if shown == total {
-            format!("{total} certificate(s), {secret} with a secret key")
+            format!("{total} certificate(s), {mine} with a secret key")
         } else {
-            format!("{shown} of {total} certificate(s), {secret} with a secret key")
+            format!("{shown} of {total} certificate(s), {mine} with a secret key")
         }
         .into(),
     );
 }
 
-/// `Alice <alice@example.org>` -> `("Alice", "alice@example.org")`.
-fn split_user_id(user_id: &str) -> (String, String) {
-    match (user_id.find('<'), user_id.rfind('>')) {
-        (Some(open), Some(close)) if close > open => (
-            user_id[..open].trim().to_string(),
-            user_id[open + 1..close].trim().to_string(),
-        ),
-        _ => (user_id.to_string(), String::new()),
-    }
-}
-
 fn to_row(summary: &CertSummary) -> CertRow {
+    let (name, email) = split_user_id(&summary.primary_user_id);
     CertRow {
         fingerprint: summary.fingerprint.clone().into(),
         fingerprint_pretty: summary.fingerprint_pretty().into(),
         key_id: summary.key_id.clone().into(),
         primary_user_id: summary.primary_user_id.clone().into(),
+        initials: initials(&name, &email, &summary.key_id).into(),
+        tint_index: tint_index(&summary.fingerprint),
+        name: name.into(),
+        email: email.into(),
         user_ids: summary.user_ids.join("\n").into(),
         algorithm: summary.algorithm.clone().into(),
         created: format_time(Some(summary.created)).into(),
@@ -310,4 +775,50 @@ fn to_row(summary: &CertSummary) -> CertRow {
         capabilities: summary.capabilities().into(),
         has_secret: summary.has_secret,
     }
+}
+
+/// `Alice Smith <alice@example.org>` -> `("Alice Smith", "alice@example.org")`.
+fn split_user_id(user_id: &str) -> (String, String) {
+    match (user_id.find('<'), user_id.rfind('>')) {
+        (Some(open), Some(close)) if close > open => (
+            user_id[..open].trim().to_string(),
+            user_id[open + 1..close].trim().to_string(),
+        ),
+        _ if user_id.contains('@') && !user_id.contains(' ') => {
+            (String::new(), user_id.trim().to_string())
+        }
+        _ => (user_id.trim().to_string(), String::new()),
+    }
+}
+
+/// Up to two letters for the monogram, falling back through name, e-mail and
+/// key ID so a certificate with no user ID still gets a legible circle.
+fn initials(name: &str, email: &str, key_id: &str) -> String {
+    let from_name: String = name
+        .split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .collect();
+    if !from_name.is_empty() {
+        return from_name.to_uppercase();
+    }
+    email
+        .chars()
+        .chain(key_id.chars())
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".to_string())
+}
+
+/// Pick one of Theme.monograms from the fingerprint, so a certificate keeps its
+/// colour between sessions. FNV-1a: short, stable, and not a hash that anything
+/// depends on for security.
+fn tint_index(fingerprint: &str) -> i32 {
+    const PALETTE: u64 = 6;
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in fingerprint.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (hash % PALETTE) as i32
 }

@@ -1,0 +1,111 @@
+import { Palette } from "std-widgets.slint";
+
+// One source of truth for colour, spacing and type.
+//
+// The app follows the system light/dark setting but not the system *style*:
+// Slint's cupertino/fluent widget styles would make the app look like two
+// different products on the two platforms. Everything visible here is drawn by
+// this design system, so rgpg looks like itself on macOS and on Linux, and only
+// picks up platform character where it should — the window frame, the font, and
+// the scrollbars.
+export global Theme {
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+
+    // Surfaces, back to front.
+    out property <brush> bg: dark ? #131519 : #f5f6f9;
+    out property <brush> surface: dark ? #1a1d23 : #ffffff;
+    out property <brush> surface-sunken: dark ? #16181d : #eef0f4;
+    out property <brush> hover: dark ? #ffffff0d : #0000000a;
+    out property <brush> pressed: dark ? #ffffff1a : #00000014;
+    out property <brush> selected: dark ? #6f8dff24 : #3457dc14;
+    out property <brush> border: dark ? #272b33 : #e4e7ee;
+    out property <brush> border-strong: dark ? #363c47 : #ccd2de;
+    out property <brush> scrim: dark ? #000000b8 : #1b1f2799;
+
+    // Ink.
+    out property <brush> text: dark ? #e8eaef : #161a21;
+    out property <brush> text-dim: dark ? #99a1b0 : #5c6470;
+    out property <brush> text-faint: dark ? #6b7385 : #8b93a0;
+
+    // Accent.
+    out property <brush> accent: dark ? #6f8dff : #3457dc;
+    out property <brush> accent-hover: dark ? #86a0ff : #2a48c0;
+    out property <brush> accent-ink: #ffffff;
+    out property <brush> accent-soft: dark ? #6f8dff26 : #3457dc14;
+
+    // Status. Each has a soft companion for pill backgrounds.
+    out property <brush> ok: dark ? #4ed6a1 : #0f7a58;
+    out property <brush> ok-soft: dark ? #4ed6a11f : #0f7a5814;
+    out property <brush> warn: dark ? #f0b264 : #9a5c08;
+    out property <brush> warn-soft: dark ? #f0b2641f : #9a5c0814;
+    out property <brush> danger: dark ? #ff8098 : #c22a46;
+    out property <brush> danger-soft: dark ? #ff80981f : #c22a4614;
+
+    // Monogram tints, indexed by a hash of the fingerprint so a certificate
+    // keeps the same colour between sessions.
+    out property <[color]> monograms: dark
+        ? [#6f8dff, #4ed6a1, #f0b264, #ff8098, #b088f9, #56c2d6]
+        : [#3457dc, #0f7a58, #9a5c08, #c22a46, #7c4dd0, #0d6d80];
+
+    // Spacing scale. Everything in the app is a multiple of 4.
+    out property <length> s1: 4px;
+    out property <length> s2: 8px;
+    out property <length> s3: 12px;
+    out property <length> s4: 16px;
+    out property <length> s5: 24px;
+    out property <length> s6: 32px;
+
+    out property <length> r-sm: 6px;
+    out property <length> r-md: 10px;
+    out property <length> r-lg: 14px;
+
+    // Type scale.
+    out property <length> t-xs: 11px;
+    out property <length> t-sm: 12px;
+    out property <length> t-md: 13px;
+    out property <length> t-lg: 15px;
+    out property <length> t-xl: 19px;
+    out property <length> t-2xl: 25px;
+
+    out property <int> w-regular: 400;
+    out property <int> w-medium: 550;
+    out property <int> w-bold: 700;
+
+    out property <duration> fast: 120ms;
+}
+
+// Stroke icons on a 24x24 grid, drawn as paths so the app ships no image
+// assets and the glyphs cannot go missing with a font.
+export global Icons {
+    out property <string> plus: "M12 5 L12 19 M5 12 L19 12";
+    // Not named `import`/`export`: both are Slint keywords.
+    out property <string> arrow-in: "M12 3 L12 15 M7 10 L12 15 L17 10 M4 20 L20 20";
+    out property <string> arrow-out: "M12 15 L12 3 M7 8 L12 3 L17 8 M4 20 L20 20";
+    out property <string> refresh: "M20 12 A8 8 0 1 1 12 4 M12 4 L16 1 M12 4 L16 7";
+    out property <string> lock: "M6 11 L18 11 L18 20 L6 20 Z M9 11 L9 8 A3 3 0 0 1 15 8 L15 11";
+    out property <string> pen: "M4 20 L4 16 L16 4 L20 8 L8 20 Z M14 6 L18 10";
+    out property <string> unlock: "M6 11 L18 11 L18 20 L6 20 Z M9 11 L9 8 A3 3 0 0 1 15 8";
+    out property <string> search: "M11 4 A7 7 0 1 0 11.01 4 M16.2 16.2 L21 21";
+    out property <string> check: "M5 12.5 L9.5 17 L19 7";
+    out property <string> cross: "M6 6 L18 18 M18 6 L6 18";
+    out property <string> key: "M9 15 A5 5 0 1 0 9.01 15 M12.5 11.5 L21 3 M18 6 L20 8 M15.5 8.5 L17.5 10.5";
+    out property <string> file: "M13 3 L6 3 L6 21 L18 21 L18 8 Z M13 3 L13 8 L18 8";
+    out property <string> shield: "M12 3 L20 6 L20 12 C20 17 16 20 12 21 C8 20 4 17 4 12 L4 6 Z";
+    out property <string> chevron-down: "M6 9.5 L12 15.5 L18 9.5";
+    out property <string> dots: "M5 12 L5.01 12 M12 12 L12.01 12 M19 12 L19.01 12";
+}
+
+export component Icon inherits Path {
+    in property <string> glyph;
+    in property <brush> tint: Theme.text;
+    in property <length> weight: 1.7px;
+
+    commands: root.glyph;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    width: 16px;
+    height: 16px;
+    fill: transparent;
+    stroke: root.tint;
+    stroke-width: root.weight;
+}

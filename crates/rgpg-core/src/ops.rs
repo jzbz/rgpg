@@ -1,6 +1,8 @@
 //! Message operations: encrypt, decrypt, sign, verify.
 
-use std::io::Write;
+use std::fs;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 
 use sequoia_openpgp::crypto::{Password, SessionKey};
 use sequoia_openpgp::packet::{PKESK, SKESK};
@@ -309,18 +311,142 @@ impl DecryptionHelper for Helper<'_> {
     }
 }
 
-/// Convenience wrapper for verifying an armored signature file against a file
-/// on disk.
+/// What a file handed to "Decrypt / Verify" turns out to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputKind {
+    /// An OpenPGP message: encrypted, signed inline, or both.
+    Message,
+    /// A bare signature — the other half of a detached pair, useless without
+    /// the file it signs.
+    DetachedSignature,
+    NotOpenPgp,
+}
+
+/// Decide what `data` is, so the UI knows whether to ask for a second file.
+pub fn classify(data: &[u8]) -> InputKind {
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    // Armored input says what it is in the header line. Check bytes rather
+    // than decoding: the file may be binary, and a UTF-8 error here would
+    // wrongly rule out an armored file whose tail is not valid UTF-8.
+    let head = &data[..data.len().min(1024)];
+    if contains(head, b"-----BEGIN PGP SIGNATURE-----") {
+        return InputKind::DetachedSignature;
+    }
+    if contains(head, b"-----BEGIN PGP MESSAGE-----")
+        || contains(head, b"-----BEGIN PGP SIGNED MESSAGE-----")
+    {
+        return InputKind::Message;
+    }
+
+    // Binary: the first packet is enough to tell the two apart.
+    use sequoia_openpgp::Packet;
+    use sequoia_openpgp::parse::{PacketParser, PacketParserResult};
+    match PacketParser::from_bytes(data) {
+        Ok(PacketParserResult::Some(pp)) => match pp.packet {
+            Packet::Signature(_) => InputKind::DetachedSignature,
+            Packet::PKESK(_)
+            | Packet::SKESK(_)
+            | Packet::SEIP(_)
+            | Packet::OnePassSig(_)
+            | Packet::CompressedData(_)
+            | Packet::Literal(_) => InputKind::Message,
+            _ => InputKind::NotOpenPgp,
+        },
+        _ => InputKind::NotOpenPgp,
+    }
+}
+
+/// `notes.txt` -> `notes.txt.asc`.
+pub fn encrypted_name(input: &Path) -> PathBuf {
+    append_extension(input, "asc")
+}
+
+/// `notes.txt` -> `notes.txt.sig`.
+pub fn signature_name(input: &Path) -> PathBuf {
+    append_extension(input, "sig")
+}
+
+/// `notes.txt.asc` -> `notes.txt`. A name with no OpenPGP extension to strip
+/// gets `.out` appended rather than being overwritten in place.
+pub fn decrypted_name(input: &Path) -> PathBuf {
+    let strippable = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e, "asc" | "pgp" | "gpg"));
+    if strippable {
+        input.with_extension("")
+    } else {
+        append_extension(input, "out")
+    }
+}
+
+fn append_extension(path: &Path, extension: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".");
+    name.push(extension);
+    PathBuf::from(name)
+}
+
+pub fn encrypt_file(
+    recipients: &[Cert],
+    signer: Option<(&Cert, Option<&str>)>,
+    input: &Path,
+    output: &Path,
+) -> Result<()> {
+    let plaintext = read(input)?;
+    encrypt(recipients, signer, &plaintext, create(output)?)
+}
+
+pub fn sign_detached_file(
+    signer: &Cert,
+    password: Option<&str>,
+    input: &Path,
+    output: &Path,
+) -> Result<()> {
+    let data = read(input)?;
+    sign_detached(signer, password, &data, create(output)?)
+}
+
+pub fn decrypt_file(
+    store: &Store,
+    input: &Path,
+    password: Option<&str>,
+    output: &Path,
+) -> Result<VerifyResult> {
+    let ciphertext = read(input)?;
+    // The output file is created only once the message parses, so a failed
+    // decryption does not leave an empty file behind.
+    let mut plaintext = Vec::new();
+    let result = decrypt(store, &ciphertext, password, &mut plaintext)?;
+    fs::write(output, &plaintext)
+        .map_err(|e| Error::io(format!("writing {}", output.display()), e))?;
+    Ok(result)
+}
+
+/// Verify an armored or binary detached signature against the file it signs.
 pub fn verify_detached_files(
     store: &Store,
-    signature_path: &std::path::Path,
-    data_path: &std::path::Path,
+    signature_path: &Path,
+    data_path: &Path,
 ) -> Result<VerifyResult> {
-    let signature = std::fs::read(signature_path)
-        .map_err(|e| Error::io(format!("reading {}", signature_path.display()), e))?;
-    let data = std::fs::read(data_path)
-        .map_err(|e| Error::io(format!("reading {}", data_path.display()), e))?;
+    let signature = read(signature_path)?;
+    let data = read(data_path)?;
     verify_detached(store, &signature, &data)
+}
+
+fn read(path: &Path) -> Result<Vec<u8>> {
+    fs::read(path).map_err(|e| Error::io(format!("reading {}", path.display()), e))
+}
+
+fn create(path: &Path) -> Result<BufWriter<fs::File>> {
+    let file =
+        fs::File::create(path).map_err(|e| Error::io(format!("writing {}", path.display()), e))?;
+    Ok(BufWriter::new(file))
 }
 
 #[cfg(test)]
@@ -357,6 +483,90 @@ mod tests {
         assert!(result.all_good(), "signatures: {:?}", result.signatures);
         assert_eq!(result.signatures[0].signer, "Alice <alice@example.org>");
         assert_eq!(result.decrypted_with, Some(bob.fingerprint().to_hex()));
+    }
+
+    #[test]
+    fn classifies_what_the_verify_dialog_will_be_handed() {
+        let (_dir, store) = scratch_store();
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+
+        let mut message = Vec::new();
+        encrypt(&[alice.clone()], None, b"hello", &mut message).unwrap();
+        assert_eq!(classify(&message), InputKind::Message);
+
+        let mut signature = Vec::new();
+        sign_detached(&alice, None, b"hello", &mut signature).unwrap();
+        assert_eq!(classify(&signature), InputKind::DetachedSignature);
+
+        assert_eq!(classify(b"just a text file\n"), InputKind::NotOpenPgp);
+        assert_eq!(classify(b""), InputKind::NotOpenPgp);
+    }
+
+    #[test]
+    fn derives_output_names() {
+        assert_eq!(encrypted_name(Path::new("notes.txt")), Path::new("notes.txt.asc"));
+        assert_eq!(signature_name(Path::new("notes.txt")), Path::new("notes.txt.sig"));
+        assert_eq!(decrypted_name(Path::new("notes.txt.asc")), Path::new("notes.txt"));
+        assert_eq!(decrypted_name(Path::new("notes.txt.gpg")), Path::new("notes.txt"));
+        // Nothing to strip: do not overwrite the input.
+        assert_eq!(decrypted_name(Path::new("notes.txt")), Path::new("notes.txt.out"));
+    }
+
+    #[test]
+    fn file_round_trip() {
+        let (dir, store) = scratch_store();
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+
+        let input = dir.path().join("notes.txt");
+        std::fs::write(&input, b"the coordinates are in the second envelope").unwrap();
+
+        let encrypted = encrypted_name(&input);
+        encrypt_file(&[alice.clone()], Some((&alice, None)), &input, &encrypted).unwrap();
+
+        let decrypted = dir.path().join("out.txt");
+        let result = decrypt_file(&store, &encrypted, None, &decrypted).unwrap();
+
+        assert!(result.all_good(), "signatures: {:?}", result.signatures);
+        assert_eq!(
+            std::fs::read(&decrypted).unwrap(),
+            b"the coordinates are in the second envelope"
+        );
+
+        let signature = signature_name(&input);
+        sign_detached_file(&alice, None, &input, &signature).unwrap();
+        assert!(
+            verify_detached_files(&store, &signature, &input)
+                .unwrap()
+                .all_good()
+        );
+    }
+
+    #[test]
+    fn failed_decryption_leaves_no_output_file() {
+        let (dir, store) = scratch_store();
+        let stranger = generate(&KeyGenRequest::new("Stranger <nobody@example.org>"))
+            .unwrap()
+            .cert;
+        // The store never sees the secret key, so nothing can decrypt this.
+        store.insert(&stranger).unwrap();
+
+        let encrypted = dir.path().join("secret.asc");
+        encrypt_file(&[stranger], None, &{
+            let p = dir.path().join("in.txt");
+            std::fs::write(&p, b"x").unwrap();
+            p
+        }, &encrypted)
+        .unwrap();
+
+        let output = dir.path().join("out.txt");
+        assert!(decrypt_file(&store, &encrypted, None, &output).is_err());
+        assert!(!output.exists(), "a failed decryption must not create the output file");
     }
 
     #[test]

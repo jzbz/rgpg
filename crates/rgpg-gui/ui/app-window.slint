@@ -1,290 +1,498 @@
+import { ListView } from "std-widgets.slint";
+import { Theme, Icons, Icon } from "theme.slint";
 import {
-    Button,
-    ComboBox,
-    GroupBox,
-    HorizontalBox,
-    LineEdit,
-    Palette,
-    ScrollView,
-    StandardTableView,
-    VerticalBox,
-} from "std-widgets.slint";
+    Btn, Check, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Tone, Variant,
+} from "widgets.slint";
+import { CertRow, RecipientRow, SignatureRow } from "types.slint";
+import { DecryptVerifyDialog, KeygenDialog, SignEncryptDialog } from "dialogs.slint";
 
-// Mirrors rgpg_core::CertSummary, flattened to strings so the UI never has to
-// format anything.
-export struct CertRow {
-    fingerprint: string,
-    fingerprint-pretty: string,
-    key-id: string,
-    primary-user-id: string,
-    user-ids: string,
-    algorithm: string,
-    created: string,
-    expires: string,
-    validity: string,
-    capabilities: string,
-    has-secret: bool,
+export { CertRow, RecipientRow, SignatureRow }
+
+component RailItem inherits Rectangle {
+    in property <string> text;
+    in property <string> glyph;
+    in property <int> count;
+    in property <bool> active;
+    callback clicked();
+
+    height: 34px;
+    border-radius: Theme.r-sm;
+    background: root.active ? Theme.selected : (touch.has-hover ? Theme.hover : transparent);
+    animate background { duration: Theme.fast; }
+
+    HorizontalLayout {
+        padding-left: Theme.s2;
+        padding-right: Theme.s2;
+        spacing: Theme.s2;
+
+        Icon {
+            glyph: root.glyph;
+            tint: root.active ? Theme.accent : Theme.text-dim;
+            y: (parent.height - self.height) / 2;
+        }
+
+        Text {
+            text: root.text;
+            color: root.active ? Theme.accent : Theme.text;
+            font-size: Theme.t-md;
+            font-weight: root.active ? Theme.w-medium : Theme.w-regular;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        Text {
+            text: "\{root.count}";
+            color: Theme.text-faint;
+            font-size: Theme.t-sm;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.clicked(); }
+    }
 }
 
-component FieldRow inherits HorizontalBox {
-    in property <string> label;
-    in property <string> value;
-    padding: 0px;
-    spacing: 8px;
-    Text {
-        text: root.label;
-        width: 110px;
-        color: Palette.foreground.transparentize(0.4);
-        vertical-alignment: top;
-    }
-    Text {
-        text: root.value;
-        wrap: word-wrap;
-        horizontal-stretch: 1;
-    }
-}
+component CertListRow inherits Rectangle {
+    in property <CertRow> cert;
+    in property <bool> selected;
+    callback clicked();
 
-component KeygenDialog inherits Rectangle {
-    callback accepted(string, string, string, int, int);
-    callback rejected();
-    in property <bool> busy;
+    height: 62px;
+    background: root.selected ? Theme.selected : (touch.has-hover ? Theme.hover : transparent);
+    animate background { duration: Theme.fast; }
 
-    background: #00000099;
-
-    // Swallow clicks so the list behind the dialog stays inert.
-    TouchArea {}
-
+    // Accent spine on the selected row.
     Rectangle {
-        width: 460px;
-        height: 400px;
-        background: Palette.background;
-        border-radius: 8px;
-        border-width: 1px;
-        border-color: Palette.border;
+        x: 0;
+        width: 3px;
+        height: parent.height;
+        background: root.selected ? Theme.accent : transparent;
+    }
 
-        VerticalBox {
-            padding: 20px;
-            spacing: 12px;
+    HorizontalLayout {
+        padding-left: Theme.s4;
+        padding-right: Theme.s4;
+        spacing: Theme.s3;
+
+        Monogram {
+            initials: root.cert.initials;
+            tint: Theme.monograms[root.cert.tint-index];
+            size: 38px;
+            y: (parent.height - self.height) / 2;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
 
             Text {
-                text: "New OpenPGP key pair";
-                font-size: 18px;
-                font-weight: 700;
+                text: root.cert.name == "" ? root.cert.primary-user-id : root.cert.name;
+                color: Theme.text;
+                font-size: Theme.t-lg;
+                font-weight: Theme.w-medium;
+                overflow: elide;
             }
 
             Text {
-                text: "The passphrase protects the secret key on disk. There is no way to recover it.";
-                wrap: word-wrap;
-                color: Palette.foreground.transparentize(0.4);
-            }
-
-            name-input := LineEdit {
-                placeholder-text: "Name";
-            }
-            email-input := LineEdit {
-                placeholder-text: "name@example.org";
-                input-type: text;
-            }
-            // Not `password :=`: an element named `password` shadows the
-            // InputType enum value of the same name.
-            pass-input := LineEdit {
-                placeholder-text: "Passphrase (optional)";
-                input-type: password;
-            }
-
-            HorizontalBox {
-                padding: 0px;
-                Text {
-                    text: "Key type";
-                    vertical-alignment: center;
-                    width: 90px;
-                }
-                key-type := ComboBox {
-                    model: ["Curve 25519 (recommended)", "RSA 3072", "RSA 4096"];
-                    current-index: 0;
-                }
-            }
-
-            HorizontalBox {
-                padding: 0px;
-                Text {
-                    text: "Expires in";
-                    vertical-alignment: center;
-                    width: 90px;
-                }
-                expiry := ComboBox {
-                    model: ["2 years", "1 year", "5 years", "never"];
-                    current-index: 0;
-                }
-            }
-
-            Rectangle { vertical-stretch: 1; }
-
-            HorizontalBox {
-                padding: 0px;
-                alignment: end;
-                Button {
-                    text: "Cancel";
-                    enabled: !root.busy;
-                    clicked => { root.rejected(); }
-                }
-                Button {
-                    text: root.busy ? "Generating…" : "Create";
-                    primary: true;
-                    enabled: !root.busy && name-input.text != "" && email-input.text != "";
-                    clicked => {
-                        root.accepted(
-                            name-input.text,
-                            email-input.text,
-                            pass-input.text,
-                            key-type.current-index,
-                            expiry.current-index,
-                        );
-                    }
-                }
+                text: root.cert.email == "" ? root.cert.key-id : root.cert.email;
+                color: Theme.text-dim;
+                font-size: Theme.t-sm;
+                overflow: elide;
             }
         }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            horizontal-stretch: 0;
+
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: end;
+
+                if root.cert.has-secret: Pill {
+                    text: "secret key";
+                    tone: Tone.accent;
+                    glyph: Icons.key;
+                }
+
+                Pill {
+                    text: root.cert.validity;
+                    tone: root.cert.validity == "valid" ? Tone.ok
+                        : root.cert.validity == "expired" ? Tone.warn
+                        : Tone.danger;
+                }
+            }
+
+            Text {
+                text: root.cert.expires == ""
+                    ? root.cert.capabilities + " · never expires"
+                    : root.cert.capabilities + " · until " + root.cert.expires;
+                color: Theme.text-faint;
+                font-size: Theme.t-xs;
+                horizontal-alignment: right;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.clicked(); }
     }
 }
 
 export component AppWindow inherits Window {
     title: "rgpg";
-    preferred-width: 1150px;
-    preferred-height: 720px;
-    min-width: 720px;
-    min-height: 480px;
+    preferred-width: 1180px;
+    preferred-height: 760px;
+    min-width: 860px;
+    min-height: 520px;
+    default-font-size: Theme.t-md;
+    background: Theme.bg;
 
-    in property <[[StandardListViewItem]]> rows;
+    // --- Certificate list -------------------------------------------------
+    in property <[CertRow]> certs;
     in property <CertRow> detail;
     in property <bool> has-selection: false;
+    in-out property <int> current-row: -1;
+    in property <int> count-all: 0;
+    in property <int> count-mine: 0;
+    in property <int> count-others: 0;
+    in-out property <int> scope: 0;
     in property <string> status: "";
     in property <bool> busy: false;
-    in-out property <int> current-row: -1;
-    in-out property <bool> keygen-open: false;
 
     callback refresh();
     callback import-file();
     callback export-selected();
     callback filter-changed(string);
-    callback row-changed(int);
+    callback scope-changed(int);
+    callback row-selected(int);
+
+    // --- New key pair -----------------------------------------------------
+    in-out property <bool> keygen-open: false;
     callback generate-key(string, string, string, int, int);
 
-    VerticalBox {
-        padding: 0px;
+    // --- Sign / Encrypt ---------------------------------------------------
+    in-out property <bool> signenc-open: false;
+    in property <string> se-input: "";
+    // Both are supplied so the dialog can preview the right one as the
+    // encrypt/sign checkboxes change, without a round trip to Rust.
+    in property <string> se-output-encrypt: "";
+    in property <string> se-output-sign: "";
+    in property <[RecipientRow]> se-recipients;
+    in property <[string]> se-signers;
+    in property <int> se-selected-count: 0;
+    callback open-sign-encrypt();
+    callback se-pick-input();
+    callback se-toggle-recipient(int);
+    callback se-run(bool, bool, int, string);
+
+    // --- Decrypt / Verify -------------------------------------------------
+    in-out property <bool> verify-open: false;
+    in property <string> dv-input: "";
+    in property <string> dv-data: "";
+    in property <bool> dv-needs-data: false;
+    in property <string> dv-output: "";
+    in property <[SignatureRow]> dv-signatures;
+    in property <string> dv-result: "";
+    in property <int> dv-tone: 0;
+    callback open-decrypt-verify();
+    callback dv-pick-input();
+    callback dv-pick-data();
+    callback dv-run(string);
+
+    HorizontalLayout {
         spacing: 0px;
 
-        // Toolbar
+        // ---------------------------------------------------------------- rail
         Rectangle {
-            background: Palette.alternate-background;
-            height: 52px;
-            HorizontalBox {
-                padding-left: 12px;
-                padding-right: 12px;
-                spacing: 8px;
-                alignment: start;
+            width: 208px;
+            background: Theme.surface-sunken;
+            horizontal-stretch: 0;
 
-                Button {
-                    text: "Import…";
-                    enabled: !root.busy;
-                    clicked => { root.import-file(); }
-                }
-                Button {
-                    text: "Export…";
-                    enabled: root.has-selection && !root.busy;
-                    clicked => { root.export-selected(); }
-                }
-                Button {
-                    text: "New key pair…";
-                    primary: true;
-                    enabled: !root.busy;
-                    clicked => { root.keygen-open = true; }
-                }
-                Button {
-                    text: "Reload";
-                    enabled: !root.busy;
-                    clicked => { root.refresh(); }
+            Rectangle {
+                x: parent.width - 1px;
+                width: 1px;
+                height: parent.height;
+                background: Theme.border;
+            }
+
+            VerticalLayout {
+                padding: Theme.s3;
+                spacing: Theme.s2;
+
+                HorizontalLayout {
+                    padding-left: Theme.s2;
+                    padding-top: Theme.s2;
+                    padding-bottom: Theme.s3;
+                    spacing: Theme.s2;
+
+                    Icon {
+                        glyph: Icons.shield;
+                        tint: Theme.accent;
+                        width: 20px;
+                        height: 20px;
+                        weight: 1.8px;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: "rgpg";
+                        color: Theme.text;
+                        font-size: Theme.t-xl;
+                        font-weight: Theme.w-bold;
+                        vertical-alignment: center;
+                    }
                 }
 
-                Rectangle { horizontal-stretch: 1; }
+                RailItem {
+                    text: "All certificates";
+                    glyph: Icons.shield;
+                    count: root.count-all;
+                    active: root.scope == 0;
+                    clicked => { root.scope = 0; root.scope-changed(0); }
+                }
+                RailItem {
+                    text: "My keys";
+                    glyph: Icons.key;
+                    count: root.count-mine;
+                    active: root.scope == 1;
+                    clicked => { root.scope = 1; root.scope-changed(1); }
+                }
+                RailItem {
+                    text: "Other people";
+                    glyph: Icons.file;
+                    count: root.count-others;
+                    active: root.scope == 2;
+                    clicked => { root.scope = 2; root.scope-changed(2); }
+                }
 
-                LineEdit {
-                    placeholder-text: "Search name, e-mail or fingerprint";
-                    width: 320px;
-                    edited => { root.filter-changed(self.text); }
+                Rectangle { vertical-stretch: 1; }
+
+                Divider { }
+
+                VerticalLayout {
+                    padding: Theme.s2;
+                    spacing: Theme.s1;
+                    SectionLabel { text: "OPERATIONS"; }
+                }
+
+                Btn {
+                    text: "Sign / Encrypt";
+                    glyph: Icons.lock;
+                    variant: Variant.ghost;
+                    enabled: !root.busy;
+                    clicked => { root.open-sign-encrypt(); }
+                }
+                Btn {
+                    text: "Decrypt / Verify";
+                    glyph: Icons.unlock;
+                    variant: Variant.ghost;
+                    enabled: !root.busy;
+                    clicked => { root.open-decrypt-verify(); }
                 }
             }
         }
 
-        HorizontalBox {
-            padding: 0px;
+        // ------------------------------------------------------------- content
+        VerticalLayout {
             spacing: 0px;
 
-            StandardTableView {
-                horizontal-stretch: 1;
-                columns: [
-                    { title: "Name", width: 220px },
-                    { title: "E-Mail", width: 220px },
-                    { title: "Valid from", width: 100px },
-                    { title: "Valid until", width: 100px },
-                    { title: "Key ID", width: 160px },
-                    { title: "Type", width: 90px },
-                    { title: "Usage", width: 70px },
-                    { title: "Secret", width: 60px },
-                ];
-                rows: root.rows;
-                current-row <=> root.current-row;
-                current-row-changed(row) => { root.row-changed(row); }
+            // Toolbar
+            Rectangle {
+                height: 58px;
+                background: Theme.bg;
+
+                Rectangle {
+                    y: parent.height - 1px;
+                    height: 1px;
+                    width: parent.width;
+                    background: Theme.border;
+                }
+
+                HorizontalLayout {
+                    padding-left: Theme.s4;
+                    padding-right: Theme.s4;
+                    spacing: Theme.s2;
+
+                    Field {
+                        placeholder: "Search name, e-mail or fingerprint";
+                        glyph: Icons.search;
+                        width: 300px;
+                        y: (parent.height - self.height) / 2;
+                        edited(text) => { root.filter-changed(text); }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; }
+
+                    Btn {
+                        text: "Import";
+                        glyph: Icons.arrow-in;
+                        enabled: !root.busy;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.import-file(); }
+                    }
+                    Btn {
+                        text: "Export";
+                        glyph: Icons.arrow-out;
+                        enabled: root.has-selection && !root.busy;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.export-selected(); }
+                    }
+                    Btn {
+                        glyph: Icons.refresh;
+                        variant: Variant.ghost;
+                        enabled: !root.busy;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.refresh(); }
+                    }
+                    Btn {
+                        text: "New key pair";
+                        glyph: Icons.plus;
+                        variant: Variant.primary;
+                        enabled: !root.busy;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.keygen-open = true; }
+                    }
+                }
             }
 
-            // Details
-            Rectangle {
-                width: 340px;
-                background: Palette.alternate-background;
+            HorizontalLayout {
+                spacing: 0px;
 
-                ScrollView {
-                    VerticalBox {
-                        padding: 16px;
-                        spacing: 10px;
+                // List
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: Theme.bg;
+
+                    if root.certs.length == 0: VerticalLayout {
+                        alignment: center;
+                        spacing: Theme.s3;
+
+                        Icon {
+                            glyph: Icons.shield;
+                            tint: Theme.text-faint;
+                            width: 44px;
+                            height: 44px;
+                            weight: 1.2px;
+                            x: (parent.width - self.width) / 2;
+                        }
+                        Text {
+                            text: root.count-all == 0
+                                ? "No certificates yet"
+                                : "Nothing matches this search";
+                            color: Theme.text;
+                            font-size: Theme.t-lg;
+                            font-weight: Theme.w-medium;
+                            horizontal-alignment: center;
+                        }
+                        Text {
+                            text: root.count-all == 0
+                                ? "Import a keyring, or create your first key pair."
+                                : "Try a different name, e-mail or fingerprint.";
+                            color: Theme.text-dim;
+                            font-size: Theme.t-md;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    if root.certs.length > 0: ListView {
+                        for cert[index] in root.certs: CertListRow {
+                            cert: cert;
+                            selected: index == root.current-row;
+                            clicked => {
+                                root.current-row = index;
+                                root.row-selected(index);
+                            }
+                        }
+                    }
+                }
+
+                // Details
+                if root.has-selection: Rectangle {
+                    width: 336px;
+                    background: Theme.surface;
+                    horizontal-stretch: 0;
+
+                    Rectangle {
+                        x: 0;
+                        width: 1px;
+                        height: parent.height;
+                        background: Theme.border;
+                    }
+
+                    VerticalLayout {
+                        padding: Theme.s5;
+                        spacing: Theme.s4;
                         alignment: start;
 
-                        if !root.has-selection: Text {
-                            text: "Select a certificate to see its details.";
-                            color: Palette.foreground.transparentize(0.4);
-                            wrap: word-wrap;
-                        }
+                        HorizontalLayout {
+                            spacing: Theme.s3;
 
-                        if root.has-selection: VerticalBox {
-                            padding: 0px;
-                            spacing: 10px;
-
-                            Text {
-                                text: root.detail.primary-user-id;
-                                font-size: 15px;
-                                font-weight: 700;
-                                wrap: word-wrap;
+                            Monogram {
+                                initials: root.detail.initials;
+                                tint: Theme.monograms[root.detail.tint-index];
+                                size: 48px;
                             }
 
-                            Rectangle {
-                                height: 24px;
-                                width: self.preferred-width;
-                                horizontal-stretch: 0;
-                                background: root.detail.validity == "valid"
-                                    ? #2e7d32
-                                    : (root.detail.validity == "expired" ? #ef6c00 : #c62828);
-                                border-radius: 4px;
-                                HorizontalBox {
-                                    padding-left: 8px;
-                                    padding-right: 8px;
-                                    Text {
-                                        text: root.detail.validity;
-                                        color: white;
-                                        vertical-alignment: center;
-                                    }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+
+                                Text {
+                                    text: root.detail.name == ""
+                                        ? root.detail.primary-user-id
+                                        : root.detail.name;
+                                    color: Theme.text;
+                                    font-size: Theme.t-lg;
+                                    font-weight: Theme.w-bold;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: root.detail.email;
+                                    color: Theme.text-dim;
+                                    font-size: Theme.t-sm;
+                                    overflow: elide;
                                 }
                             }
+                        }
 
-                            FieldRow { label: "Fingerprint"; value: root.detail.fingerprint-pretty; }
-                            FieldRow { label: "Key ID"; value: root.detail.key-id; }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+
+                            Pill {
+                                text: root.detail.validity;
+                                tone: root.detail.validity == "valid" ? Tone.ok
+                                    : root.detail.validity == "expired" ? Tone.warn
+                                    : Tone.danger;
+                            }
+                            if root.detail.has-secret: Pill {
+                                text: "secret key";
+                                tone: Tone.accent;
+                                glyph: Icons.key;
+                            }
+                        }
+
+                        Divider { }
+
+                        SectionLabel { text: "CERTIFICATE"; }
+
+                        VerticalLayout {
+                            spacing: Theme.s3;
+
+                            FieldRow {
+                                label: "Fingerprint";
+                                value: root.detail.fingerprint-pretty;
+                                mono: true;
+                            }
+                            FieldRow { label: "Key ID"; value: root.detail.key-id; mono: true; }
                             FieldRow { label: "Algorithm"; value: root.detail.algorithm; }
                             FieldRow { label: "Created"; value: root.detail.created; }
                             FieldRow {
@@ -292,28 +500,64 @@ export component AppWindow inherits Window {
                                 value: root.detail.expires == "" ? "never" : root.detail.expires;
                             }
                             FieldRow { label: "Usage"; value: root.detail.capabilities; }
-                            FieldRow {
-                                label: "Secret key";
-                                value: root.detail.has-secret ? "yes" : "no";
-                            }
                             FieldRow { label: "User IDs"; value: root.detail.user-ids; }
+                        }
+
+                        Divider { }
+
+                        HorizontalLayout {
+                            spacing: Theme.s2;
+                            Btn {
+                                text: "Export…";
+                                glyph: Icons.arrow-out;
+                                enabled: !root.busy;
+                                clicked => { root.export-selected(); }
+                            }
+                            Btn {
+                                text: "Encrypt to…";
+                                glyph: Icons.lock;
+                                enabled: !root.busy;
+                                clicked => { root.open-sign-encrypt(); }
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // Status bar
-        Rectangle {
-            height: 28px;
-            background: Palette.alternate-background;
-            HorizontalBox {
-                padding-left: 12px;
-                padding-right: 12px;
-                Text {
-                    text: root.status;
-                    vertical-alignment: center;
-                    overflow: elide;
+            // Status bar
+            Rectangle {
+                height: 28px;
+                background: Theme.surface-sunken;
+
+                Rectangle {
+                    y: 0;
+                    height: 1px;
+                    width: parent.width;
+                    background: Theme.border;
+                }
+
+                HorizontalLayout {
+                    padding-left: Theme.s4;
+                    padding-right: Theme.s4;
+                    spacing: Theme.s2;
+
+                    if root.busy: Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 4px;
+                        background: Theme.accent;
+                        y: (parent.height - self.height) / 2;
+                        opacity: 0.4;
+                        animate opacity { duration: 700ms; iteration-count: -1; direction: alternate; }
+                    }
+
+                    Text {
+                        text: root.status;
+                        color: Theme.text-dim;
+                        font-size: Theme.t-sm;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
                 }
             }
         }
@@ -321,9 +565,40 @@ export component AppWindow inherits Window {
 
     if root.keygen-open: KeygenDialog {
         busy: root.busy;
-        rejected => { root.keygen-open = false; }
+        dismissed => { root.keygen-open = false; }
         accepted(name, email, password, key-type, expiry) => {
             root.generate-key(name, email, password, key-type, expiry);
         }
+    }
+
+    if root.signenc-open: SignEncryptDialog {
+        busy: root.busy;
+        input-path: root.se-input;
+        output-encrypt: root.se-output-encrypt;
+        output-sign: root.se-output-sign;
+        recipients: root.se-recipients;
+        signers: root.se-signers;
+        chosen-recipients: root.se-selected-count;
+        dismissed => { root.signenc-open = false; }
+        pick-input => { root.se-pick-input(); }
+        toggle-recipient(index) => { root.se-toggle-recipient(index); }
+        run(encrypt, sign, signer, password) => {
+            root.se-run(encrypt, sign, signer, password);
+        }
+    }
+
+    if root.verify-open: DecryptVerifyDialog {
+        busy: root.busy;
+        input-path: root.dv-input;
+        data-path: root.dv-data;
+        needs-data: root.dv-needs-data;
+        output-path: root.dv-output;
+        signatures: root.dv-signatures;
+        result: root.dv-result;
+        result-tone: root.dv-tone;
+        dismissed => { root.verify-open = false; }
+        pick-input => { root.dv-pick-input(); }
+        pick-data => { root.dv-pick-data(); }
+        run(password) => { root.dv-run(password); }
     }
 }
