@@ -1402,3 +1402,82 @@ export component LookupDialog inherits DialogShell {
         }
     }
 }
+
+export component AboutDialog inherits DialogShell {
+    in property <string> version;
+    callback open-link();
+
+    title: "rgpg";
+    subtitle: "An OpenPGP certificate manager. Version " + root.version + ".";
+    card-width: 460px;
+
+    VerticalLayout {
+        spacing: Theme.s4;
+
+        // The icon and the pointer cursor are the affordance: Slint has no
+        // text decoration, so a link cannot be underlined.
+        link := TouchArea {
+            height: 24px;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.open-link(); }
+
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+                Icon {
+                    glyph: Icons.link;
+                    tint: link.has-hover ? Theme.accent-hover : Theme.accent;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: "rgpg.pro";
+                    color: link.has-hover ? Theme.accent-hover : Theme.accent;
+                    font-size: Theme.t-lg;
+                    font-weight: Theme.w-medium;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Divider { }
+
+        SectionLabel { text: "LICENCE"; }
+        VerticalLayout {
+            spacing: 2px;
+            Text {
+                text: "Copyright © 2026 Jonathan Zeppettini";
+                color: Theme.text;
+                font-size: Theme.t-md;
+            }
+            Text {
+                // Matches the MIT text in LICENSE; the year and holder there
+                // are the authoritative ones.
+                text: "MIT licensed.";
+                color: Theme.text-dim;
+                font-size: Theme.t-sm;
+            }
+        }
+
+        SectionLabel { text: "BUILT WITH"; }
+        VerticalLayout {
+            spacing: Theme.s2;
+            // Slint's royalty-free licence requires attribution in the
+            // application, which is what this line is for. Removing it would
+            // mean falling back to its GPLv3 or commercial terms.
+            FieldRow { label: "Made with Slint"; value: "slint.dev — royalty-free desktop licence"; }
+            FieldRow { label: "Sequoia-PGP"; value: "sequoia-pgp.org — LGPL-2.0-or-later"; }
+            FieldRow { label: "Lucide"; value: "lucide.dev — ISC licence"; }
+        }
+
+        Divider { }
+
+        HorizontalLayout {
+            alignment: end;
+            Btn {
+                text: "Close";
+                variant: Variant.primary;
+                clicked => { root.dismissed(); }
+            }
+        }
+    }
+}

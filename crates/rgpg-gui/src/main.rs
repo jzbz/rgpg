@@ -323,6 +323,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         revoke_certification: false,
     }));
 
+    ui.set_version(env!("CARGO_PKG_VERSION").into());
+    ui.on_about_open_link({
+        let ui_weak = ui.as_weak();
+        move || {
+            let ui = ui_weak.unwrap();
+            if let Err(e) = open::that_detached("https://rgpg.pro") {
+                ui.set_status(format!("Could not open the browser: {e}").into());
+            }
+        }
+    });
+
     reload(&ui, &state);
     wire_list(&ui, &state);
     wire_keygen(&ui, &state);

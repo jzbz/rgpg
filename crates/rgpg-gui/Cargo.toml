@@ -40,6 +40,9 @@ rfd = "0.17"
 # Slint exposes no clipboard API, only a platform trait for backend authors.
 # wayland-data-control is the wlr protocol, which GNOME does not implement, so
 # this falls back to X11 through XWayland there.
+# Hands a URL to the desktop's own opener: xdg-open on Linux, open on macOS.
+open = "5"
+
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 
 [build-dependencies]

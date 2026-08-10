@@ -4,7 +4,7 @@ import {
     Btn, Check, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Select, Tone, Variant,
 } from "widgets.slint";
 import { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow } from "types.slint";
-import { CertifyDialog, DecryptVerifyDialog, DetailsDialog, KeygenDialog, LifecycleDialog, LookupDialog, NotepadDialog, RevokeDialog, SignEncryptDialog } from "dialogs.slint";
+import { AboutDialog, CertifyDialog, DecryptVerifyDialog, DetailsDialog, KeygenDialog, LifecycleDialog, LookupDialog, NotepadDialog, RevokeDialog, SignEncryptDialog } from "dialogs.slint";
 
 export { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow }
 
@@ -281,6 +281,11 @@ export component AppWindow inherits Window {
     callback open-notepad();
     callback np-run(int, string, int, string, string);
     callback np-copy();
+
+    // --- About ------------------------------------------------------------
+    in-out property <bool> about-open: false;
+    in property <string> version: "";
+    callback about-open-link();
     in property <bool> np-copied: false;
 
     callback open-revoke();
@@ -389,6 +394,13 @@ export component AppWindow inherits Window {
                     wide: true;
                     enabled: !root.busy;
                     clicked => { root.open-notepad(); }
+                }
+                Btn {
+                    text: "About";
+                    glyph: Icons.shield;
+                    variant: Variant.ghost;
+                    wide: true;
+                    clicked => { root.about-open = true; }
                 }
             }
         }
@@ -920,6 +932,12 @@ export component AppWindow inherits Window {
         run(mode, expiry, value, password) => {
             root.lifecycle-run(mode, expiry, value, password);
         }
+    }
+
+    if root.about-open: AboutDialog {
+        version: root.version;
+        dismissed => { root.about-open = false; }
+        open-link => { root.about-open-link(); }
     }
 
     if root.notepad-open: NotepadDialog {
