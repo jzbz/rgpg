@@ -59,13 +59,25 @@ fn runtime() -> Result<&'static Runtime> {
         .map_err(|e| Error::invalid(format!("cannot start the agent runtime: {e}")))
 }
 
-/// Path of the unrestricted agent socket, if it looks like one is there.
+/// Path of the unrestricted agent socket.
+///
+/// Modern GnuPG puts its sockets under the XDG runtime directory, not in the
+/// home directory — `~/.gnupg/S.gpg-agent` usually does not exist at all. That
+/// matters: `connect_to_default` otherwise finds the *restricted* socket,
+/// which rejects `OPTION display` and leaves pinentry with nowhere to prompt.
 fn full_socket() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("GNUPGHOME")
+    let mut candidates = Vec::new();
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+        candidates.push(std::path::PathBuf::from(runtime).join("gnupg/S.gpg-agent"));
+    }
+    // Fall back to the classic location for older GnuPG layouts.
+    if let Some(home) = std::env::var_os("GNUPGHOME")
         .map(std::path::PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".gnupg")))?;
-    let socket = home.join("S.gpg-agent");
-    socket.exists().then_some(socket)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".gnupg")))
+    {
+        candidates.push(home.join("S.gpg-agent"));
+    }
+    candidates.into_iter().find(|p| p.exists())
 }
 
 /// Tell the agent where to raise its pinentry, the way gpg does on every
