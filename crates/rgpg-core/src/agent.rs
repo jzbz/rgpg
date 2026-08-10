@@ -59,25 +59,69 @@ fn runtime() -> Result<&'static Runtime> {
         .map_err(|e| Error::invalid(format!("cannot start the agent runtime: {e}")))
 }
 
+/// Tell the agent where to raise its pinentry, the way gpg does on every
+/// connection.
+///
+/// Each reply is checked. An `OPTION` the agent rejects leaves the Assuan
+/// connection answering nothing to later commands — key enumeration goes
+/// silently empty and the card stops being found — so the first failure aborts
+/// and the caller starts a clean connection instead of limping on.
+async fn set_pinentry_context(agent: &mut Agent) -> std::result::Result<(), String> {
+    let options = [
+        ("ttyname", std::env::var("GPG_TTY").ok()),
+        ("ttytype", std::env::var("TERM").ok()),
+        ("display", std::env::var("DISPLAY").ok()),
+        ("xauthority", std::env::var("XAUTHORITY").ok()),
+        (
+            "putenv",
+            std::env::var("WAYLAND_DISPLAY")
+                .ok()
+                .map(|w| format!("WAYLAND_DISPLAY={w}")),
+        ),
+    ];
+
+    for (option, value) in options {
+        let Some(value) = value.filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        agent
+            .send_simple(format!("OPTION {option}={value}"))
+            .await
+            .map_err(|e| format!("{option}: {e}"))?;
+    }
+    Ok(())
+}
+
 fn connect() -> Result<Agent> {
     runtime()?.block_on(async {
-        Agent::connect_to_default()
-            .await
-            .map_err(|e| Error::invalid(format!("no gpg-agent to talk to: {e}")))
+        let connect = || async {
+            Agent::connect_to_default()
+                .await
+                .map_err(|e| Error::invalid(format!("no gpg-agent to talk to: {e}")))
+        };
+
+        let mut agent = connect().await?;
+        if let Err(e) = set_pinentry_context(&mut agent).await {
+            // Without a prompt target the agent can still do anything whose PIN
+            // is cached, so a fresh connection beats no connection.
+            log_once(&e);
+            agent = connect().await?;
+        }
+        Ok(agent)
     })
 }
 
-// Note for whoever picks up card decryption. The agent fails it with
-// "Inappropriate ioctl for device <Pinentry>": not a card fault, but the
-// agent having no terminal or display to raise its PIN prompt on. Signing
-// escapes it only because that PIN is usually cached already.
-//
-// Sending gpg's usual `OPTION ttyname=/ttytype=/display=` lines on connect is
-// the obvious fix and does not work as written: an OPTION the agent rejects
-// leaves the Assuan connection in a state where later commands return
-// nothing, and key enumeration silently goes empty — verified, the card
-// stopped being found at all. Whatever lands here must check each OPTION's
-// reply instead of discarding it.
+/// Report a pinentry-setup failure once per process rather than on every
+/// connection, which happens for each operation.
+fn log_once(message: &str) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        eprintln!(
+            "rgpg: gpg-agent refused the pinentry context ({message}); \
+             it will only manage keys whose PIN is already cached"
+        );
+    });
+}
 
 /// Whether a gpg-agent is reachable at all.
 ///
