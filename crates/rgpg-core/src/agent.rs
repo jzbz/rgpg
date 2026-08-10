@@ -401,7 +401,8 @@ mod tests {
         // Encrypt to the card, then decrypt with it. No local secret exists
         // for this certificate, so success can only come from the agent.
         let mut ciphertext = Vec::new();
-        crate::ops::encrypt(&[card.clone()], None, b"for the card only", &mut ciphertext).unwrap();
+        crate::ops::encrypt(&[card.clone()], &[], None, b"for the card only", &mut ciphertext)
+            .unwrap();
 
         // Surface whichever of the two steps is actually failing.
         {

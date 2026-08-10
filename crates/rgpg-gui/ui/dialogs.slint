@@ -142,12 +142,14 @@ export component SignEncryptDialog inherits DialogShell {
     in property <bool> busy;
     callback pick-input();
     callback toggle-recipient(int);
-    callback run(bool, bool, int, string);
+    callback run(bool, bool, int, string, string);
 
     // Held on the dialog rather than read off the widgets: both the passphrase
     // field and the signer dropdown live inside `if` blocks, and a conditional
     // element cannot be referenced from the footer.
     property <string> password;
+    /// Symmetric passphrase, entirely separate from the signing key's.
+    property <string> secret;
     property <int> signer-index: 0;
 
     // Counted in Rust: Slint has no way to fold over a model in an expression.
@@ -158,7 +160,7 @@ export component SignEncryptDialog inherits DialogShell {
     property <bool> can-run:
         root.input-path != ""
         && (root.want-encrypt || root.want-sign)
-        && (!root.want-encrypt || root.chosen-recipients > 0)
+        && (!root.want-encrypt || root.chosen-recipients > 0 || root.secret != "")
         && (!root.want-sign || root.signers.length > 0);
 
     title: "Sign / Encrypt file";
@@ -288,6 +290,13 @@ export component SignEncryptDialog inherits DialogShell {
             }
         }
 
+        if root.want-encrypt: Field {
+            placeholder: "Or a password — anyone with it can open the file";
+            secret: true;
+            enabled: !root.busy;
+            edited(text) => { root.secret = text; }
+        }
+
         if root.want-sign && root.signers.length > 0: VerticalLayout {
             spacing: 6px;
             Text {
@@ -338,6 +347,7 @@ export component SignEncryptDialog inherits DialogShell {
                         root.want-sign,
                         root.signer-index,
                         root.password,
+                        root.secret,
                     );
                 }
             }

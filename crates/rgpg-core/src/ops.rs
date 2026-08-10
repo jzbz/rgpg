@@ -46,15 +46,26 @@ impl VerifyResult {
     }
 }
 
-/// Encrypt to `recipients`, optionally signing with `signer`.
+/// Encrypt to `recipients` and/or to `passwords`, optionally signing.
+///
+/// Both may be given at once: the message then carries a session key wrapped
+/// for every recipient *and* wrapped by each password, so either opens it.
+/// That is what lets a file go to a colleague who has a key and to one who
+/// only has a shared secret.
+///
+/// A password-only message is what `gpg -c` produces.
 pub fn encrypt(
     recipients: &[Cert],
+    passwords: &[String],
     signer: Option<(&Cert, Option<&str>)>,
     plaintext: &[u8],
     sink: impl Write + Send + Sync,
 ) -> Result<()> {
-    if recipients.is_empty() {
-        return Err(Error::invalid("select at least one recipient"));
+    let passwords: Vec<&String> = passwords.iter().filter(|p| !p.is_empty()).collect();
+    if recipients.is_empty() && passwords.is_empty() {
+        return Err(Error::invalid(
+            "choose at least one recipient, or set a password",
+        ));
     }
     let policy = policy();
 
@@ -83,7 +94,10 @@ pub fn encrypt(
 
     let message = Message::new(sink);
     let message = Armorer::new(message).build()?;
-    let message = Encryptor::for_recipients(message, recipient_keys).build()?;
+
+    let message = Encryptor::for_recipients(message, recipient_keys)
+        .add_passwords(passwords.into_iter().map(|p| Password::from(p.as_str())))
+        .build()?;
 
     let message = match signer {
         Some((cert, password)) => {
@@ -261,7 +275,7 @@ impl DecryptionHelper for Helper<'_> {
     fn decrypt(
         &mut self,
         pkesks: &[PKESK],
-        _skesks: &[SKESK],
+        skesks: &[SKESK],
         sym_algo: Option<SymmetricAlgorithm>,
         decrypt: &mut dyn FnMut(Option<SymmetricAlgorithm>, &SessionKey) -> bool,
     ) -> anyhow::Result<Option<Cert>> {
@@ -314,6 +328,20 @@ impl DecryptionHelper for Helper<'_> {
             }
         }
 
+        // A password-encrypted message carries no recipient at all, so try the
+        // supplied passphrase against the symmetric envelopes before deciding
+        // this message was not meant for us.
+        if let Some(password) = self.password.as_deref().filter(|p| !p.is_empty()) {
+            let password = Password::from(password);
+            for skesk in skesks {
+                if let Ok((algo, session_key)) = skesk.decrypt(&password)
+                    && decrypt(algo, &session_key)
+                {
+                    return Ok(None);
+                }
+            }
+        }
+
         // Nothing local fits. The message may be for a card key, whose secret
         // half exists only on the card — ask the agent, which will raise its
         // own PIN prompt if the card needs one.
@@ -351,7 +379,7 @@ impl DecryptionHelper for Helper<'_> {
         }
 
         Err(anyhow::anyhow!(
-            "no secret key in the store or the agent can decrypt this message"
+            "no secret key, and no password, opens this message"
         ))
     }
 }
@@ -439,12 +467,13 @@ fn append_extension(path: &Path, extension: &str) -> PathBuf {
 
 pub fn encrypt_file(
     recipients: &[Cert],
+    passwords: &[String],
     signer: Option<(&Cert, Option<&str>)>,
     input: &Path,
     output: &Path,
 ) -> Result<()> {
     let plaintext = read(input)?;
-    encrypt(recipients, signer, &plaintext, create(output)?)
+    encrypt(recipients, passwords, signer, &plaintext, create(output)?)
 }
 
 pub fn sign_detached_file(
@@ -518,7 +547,8 @@ mod tests {
         store.insert_secret(&bob).unwrap();
 
         let mut ciphertext = Vec::new();
-        encrypt(&[bob.clone()], Some((&alice, None)), b"attack at dawn", &mut ciphertext).unwrap();
+        encrypt(&[bob.clone()], &[], Some((&alice, None)), b"attack at dawn", &mut ciphertext)
+            .unwrap();
         assert!(ciphertext.starts_with(b"-----BEGIN PGP MESSAGE-----"));
 
         let mut plaintext = Vec::new();
@@ -539,7 +569,7 @@ mod tests {
         store.insert_secret(&alice).unwrap();
 
         let mut message = Vec::new();
-        encrypt(&[alice.clone()], None, b"hello", &mut message).unwrap();
+        encrypt(&[alice.clone()], &[], None, b"hello", &mut message).unwrap();
         assert_eq!(classify(&message), InputKind::Message);
 
         let mut signature = Vec::new();
@@ -572,7 +602,7 @@ mod tests {
         std::fs::write(&input, b"the coordinates are in the second envelope").unwrap();
 
         let encrypted = encrypted_name(&input);
-        encrypt_file(&[alice.clone()], Some((&alice, None)), &input, &encrypted).unwrap();
+        encrypt_file(&[alice.clone()], &[], Some((&alice, None)), &input, &encrypted).unwrap();
 
         let decrypted = dir.path().join("out.txt");
         let result = decrypt_file(&store, &encrypted, None, &decrypted).unwrap();
@@ -602,7 +632,7 @@ mod tests {
         store.insert(&stranger).unwrap();
 
         let encrypted = dir.path().join("secret.asc");
-        encrypt_file(&[stranger], None, &{
+        encrypt_file(&[stranger], &[], None, &{
             let p = dir.path().join("in.txt");
             std::fs::write(&p, b"x").unwrap();
             p
@@ -612,6 +642,58 @@ mod tests {
         let output = dir.path().join("out.txt");
         assert!(decrypt_file(&store, &encrypted, None, &output).is_err());
         assert!(!output.exists(), "a failed decryption must not create the output file");
+    }
+
+    #[test]
+    fn encrypts_to_a_password_alone() {
+        let (_dir, store) = scratch_store();
+
+        let mut ciphertext = Vec::new();
+        encrypt(&[], &["hunter2".to_string()], None, b"no keys involved", &mut ciphertext).unwrap();
+
+        let mut plaintext = Vec::new();
+        decrypt(&store, &ciphertext, Some("hunter2"), &mut plaintext).unwrap();
+        assert_eq!(plaintext, b"no keys involved");
+
+        // The wrong password must not open it, and neither must none.
+        assert!(decrypt(&store, &ciphertext, Some("hunter3"), &mut Vec::new()).is_err());
+        assert!(decrypt(&store, &ciphertext, None, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn a_message_can_take_either_a_key_or_a_password() {
+        let (_dir, store) = scratch_store();
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+
+        let mut ciphertext = Vec::new();
+        encrypt(
+            &[alice.clone()],
+            &["shared secret".to_string()],
+            None,
+            b"either way in",
+            &mut ciphertext,
+        )
+        .unwrap();
+
+        // Alice's key opens it with no password at all.
+        let mut by_key = Vec::new();
+        decrypt(&store, &ciphertext, None, &mut by_key).unwrap();
+        assert_eq!(by_key, b"either way in");
+
+        // And an empty store with only the password opens the same message.
+        let (_other_dir, bare) = scratch_store();
+        let mut by_password = Vec::new();
+        decrypt(&bare, &ciphertext, Some("shared secret"), &mut by_password).unwrap();
+        assert_eq!(by_password, b"either way in");
+    }
+
+    #[test]
+    fn refuses_a_message_addressed_to_nobody() {
+        assert!(encrypt(&[], &[], None, b"x", &mut Vec::new()).is_err());
+        assert!(encrypt(&[], &[String::new()], None, b"x", &mut Vec::new()).is_err());
     }
 
     #[test]

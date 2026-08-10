@@ -588,15 +588,16 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
 
     ui.on_se_run({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
-        move |encrypt, sign, signer_index, password| {
+        move |encrypt, sign, signer_index, password, secret| {
             let ui = ui_weak.unwrap();
             ui.set_busy(true);
             ui.set_status(if encrypt { "Encrypting…" } else { "Signing…" }.into());
 
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
-            let password = password.to_string();
+            let (password, secret) = (password.to_string(), secret.to_string());
             std::thread::spawn(move || {
-                let outcome = run_sign_encrypt(&state, encrypt, sign, signer_index, &password);
+                let outcome =
+                    run_sign_encrypt(&state, encrypt, sign, signer_index, &password, &secret);
                 let _ = slint::invoke_from_event_loop(move || {
                     let ui = ui_weak.unwrap();
                     ui.set_busy(false);
@@ -620,6 +621,7 @@ fn run_sign_encrypt(
     sign: bool,
     signer_index: i32,
     password: &str,
+    secret: &str,
 ) -> Result<PathBuf, String> {
     let guard = state.lock().unwrap();
 
@@ -659,13 +661,19 @@ fn run_sign_encrypt(
                     .map_err(|e| format!("Recipient {} unavailable: {e}", entry.label))?,
             );
         }
-        if recipients.is_empty() {
-            return Err("Select at least one recipient".to_string());
+        let passwords: Vec<String> = if secret.is_empty() {
+            Vec::new()
+        } else {
+            vec![secret.to_string()]
+        };
+        if recipients.is_empty() && passwords.is_empty() {
+            return Err("Select a recipient, or set a password".to_string());
         }
 
         let output = ops::encrypted_name(&input);
         ops::encrypt_file(
             &recipients,
+            &passwords,
             signer.as_ref().map(|cert| (cert, password)),
             &input,
             &output,
@@ -1617,6 +1625,7 @@ fn run_notepad(
             let signing = if action == 2 { Some(signer(&guard)?) } else { None };
             ops::encrypt(
                 &certs,
+                &[],
                 signing.as_ref().map(|cert| (cert, password)),
                 text.as_bytes(),
                 &mut output,

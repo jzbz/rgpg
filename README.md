@@ -219,6 +219,19 @@ certificate can be marked one by hand from its details pane.
 The graph is rebuilt on every store reload rather than cached, which is fine
 for the sizes tested and will need revisiting for a keyring of thousands.
 
+## Encrypting with a password
+
+A message can be encrypted to certificates, to passwords, or to both at once —
+the session key is wrapped separately for each, so any one of them opens it.
+Encrypting to a password alone is what `gpg -c` produces, and rgpg now reads
+that too: the decryption helper tries the supplied passphrase against the
+symmetric envelopes before concluding a message was not meant for us.
+
+That is one field doing two jobs on the way in and two on the way out. In Sign
+/ Encrypt the passphrase that unlocks *your signing key* and the password that
+*anyone* will need are deliberately separate fields, because confusing them
+would hand out the wrong secret.
+
 ## Revocation
 
 Revocation is one-way and public: the signature becomes part of the certificate,

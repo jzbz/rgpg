@@ -205,7 +205,7 @@ export component AppWindow inherits Window {
     callback open-sign-encrypt();
     callback se-pick-input();
     callback se-toggle-recipient(int);
-    callback se-run(bool, bool, int, string);
+    callback se-run(bool, bool, int, string, string);
 
     // --- Decrypt / Verify -------------------------------------------------
     in-out property <bool> verify-open: false;
@@ -870,8 +870,8 @@ export component AppWindow inherits Window {
         dismissed => { root.signenc-open = false; }
         pick-input => { root.se-pick-input(); }
         toggle-recipient(index) => { root.se-toggle-recipient(index); }
-        run(encrypt, sign, signer, password) => {
-            root.se-run(encrypt, sign, signer, password);
+        run(encrypt, sign, signer, password, secret) => {
+            root.se-run(encrypt, sign, signer, password, secret);
         }
     }
 
