@@ -117,6 +117,13 @@ export component Btn inherits Rectangle {
 // Single-line text entry. Built on the TextInput primitive rather than
 // std-widgets' LineEdit so that focus, placeholder and password masking all
 // follow the app's own palette instead of the platform style's.
+//
+// Nothing here sits in a layout. A TextInput reports its content size as a
+// minimum and a layout honours a minimum over the space it was given, so a
+// TextInput inside a HorizontalLayout widens its box as you type and shoves
+// its neighbours aside. Setting `min-width: 0` does not help — the intrinsic
+// layout info wins. Positioning against this element's own size is what keeps
+// the box the size the caller asked for.
 export component Field inherits Rectangle {
     in property <string> placeholder;
     in property <bool> secret: false;
@@ -126,7 +133,13 @@ export component Field inherits Rectangle {
     callback edited(string);
     callback accepted();
 
+    property <length> text-x: root.glyph.width > 0
+        ? Theme.s3 + 16px + Theme.s2
+        : Theme.s3;
+
     height: 34px;
+    min-width: 0px;
+    clip: true;
     background: Theme.surface-sunken;
     border-radius: Theme.r-sm;
     border-width: 1px;
@@ -135,38 +148,34 @@ export component Field inherits Rectangle {
 
     animate border-color { duration: Theme.fast; }
 
-    HorizontalLayout {
-        padding-left: Theme.s3;
-        padding-right: Theme.s3;
-        spacing: Theme.s2;
-
-        if root.glyph.width > 0: Icon {
-            glyph: root.glyph;
-            tint: Theme.text-faint;
-            y: (parent.height - self.height) / 2;
-        }
-
-        input := TextInput {
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-            color: Theme.text;
-            font-size: Theme.t-md;
-            single-line: true;
-            read-only: !root.enabled;
-            input-type: root.secret ? InputType.password : InputType.text;
-            selection-background-color: Theme.accent;
-            selection-foreground-color: Theme.accent-ink;
-            edited => { root.edited(self.text); }
-            accepted => { root.accepted(); }
-        }
+    if root.glyph.width > 0: Icon {
+        glyph: root.glyph;
+        tint: Theme.text-faint;
+        x: Theme.s3;
+        y: (root.height - self.height) / 2;
     }
 
-    // Bounded and elided: a placeholder longer than its box would otherwise
-    // draw straight out of the field and over whatever sits beside it.
-    if input.text == "": Text {
-        x: root.glyph.width == 0 ? Theme.s3 : Theme.s3 + 16px + Theme.s2;
+    input := TextInput {
+        x: root.text-x;
         y: 0;
-        width: root.width - self.x - Theme.s3;
+        width: root.width - root.text-x - Theme.s3;
+        height: root.height;
+        vertical-alignment: center;
+        color: Theme.text;
+        font-size: Theme.t-md;
+        single-line: true;
+        read-only: !root.enabled;
+        input-type: root.secret ? InputType.password : InputType.text;
+        selection-background-color: Theme.accent;
+        selection-foreground-color: Theme.accent-ink;
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(); }
+    }
+
+    if input.text == "": Text {
+        x: root.text-x;
+        y: 0;
+        width: root.width - root.text-x - Theme.s3;
         height: root.height;
         text: root.placeholder;
         color: Theme.text-faint;
@@ -486,6 +495,9 @@ export component TextArea inherits Rectangle {
         width: root.width - 2 * Theme.s3;
         height: root.height - 2 * Theme.s3;
         viewport-width: self.visible-width;
+        // Without a viewport taller than the visible area the ScrollView has
+        // nothing to scroll and shows no scrollbar.
+        viewport-height: max(self.visible-height, input.preferred-height);
 
         input := TextInput {
             width: scroll.visible-width;
