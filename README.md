@@ -300,6 +300,18 @@ so the gap is not forgotten.
 
 `revoke` is still local-only.
 
+## Keyservers
+
+Lookup tries the Web Key Directory before a keyserver, and publishing uploads
+to `keys.openpgp.org`. `RGPG_KEYSERVER` overrides the server, for an internal
+one or for testing against a local stand-in rather than uploading to public
+infrastructure.
+
+Publishing cannot be undone — a keyserver has no delete — so the dialog says so
+and uses the same danger styling as revocation. Only the public half is ever
+sent: `publish` strips secret key material before serialising, and the test
+asserts on the request to prove it.
+
 ## Where certificates live
 
 Public certificates go in a [pgp-cert-d][certd] directory, the same layout `sq`
@@ -363,7 +375,6 @@ Reading `~/.gnupg` in place is possible but not built:
 Roughly in the order Kleopatra users would notice them missing:
 
 - **Reading GnuPG's store directly** — see [Coming from GnuPG](#coming-from-gnupg).
-- **Publishing** to a keyserver or WKD. Lookup is one-way: rgpg fetches but never uploads.
 - **Revoking a single subkey.** User IDs can be revoked; subkeys cannot.
 - **Column sorting.** The list sorts own-keys-first then by name, and the rail
   filters by scope, but there is no sort control.

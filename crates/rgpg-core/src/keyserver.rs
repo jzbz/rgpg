@@ -43,7 +43,17 @@ pub struct Found {
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 /// Verifying keyserver: it only serves addresses whose owner confirmed them.
-const KEYSERVER: &str = "https://keys.openpgp.org";
+const DEFAULT_KEYSERVER: &str = "https://keys.openpgp.org";
+
+/// The keyserver to talk to. `RGPG_KEYSERVER` overrides it, for organisations
+/// running their own and for testing against a local one rather than uploading
+/// to public infrastructure.
+fn keyserver() -> String {
+    std::env::var("RGPG_KEYSERVER")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_KEYSERVER.to_string())
+}
 
 /// Look `query` up, preferring the Web Key Directory.
 ///
@@ -108,7 +118,8 @@ pub fn lookup_wkd(address: &str) -> Result<Vec<Found>> {
 /// Fetch from a HKPS keyserver.
 pub fn lookup_keyserver(query: &str) -> Result<Vec<Found>> {
     let url = format!(
-        "{KEYSERVER}/pks/lookup?op=get&options=mr&search={}",
+        "{}/pks/lookup?op=get&options=mr&search={}",
+        keyserver(),
         percent_encode(query)
     );
     let bytes = get(&url)?;
@@ -218,7 +229,7 @@ pub fn publish(cert: &Cert) -> Result<Published> {
         .map_err(|_| Error::invalid("the certificate did not armor as text"))?;
 
     let body = serde_json::json!({ "keytext": armored });
-    let reply = post(&format!("{KEYSERVER}/vks/v1/upload"), body)?;
+    let reply = post(&format!("{}/vks/v1/upload", keyserver()), body)?;
 
     Ok(Published {
         fingerprint: reply
@@ -258,7 +269,7 @@ pub fn request_verification(token: &str, addresses: &[String]) -> Result<()> {
         return Err(Error::invalid("no addresses to verify"));
     }
     let body = serde_json::json!({ "token": token, "addresses": addresses });
-    post(&format!("{KEYSERVER}/vks/v1/request-verify"), body)?;
+    post(&format!("{}/vks/v1/request-verify", keyserver()), body)?;
     Ok(())
 }
 
@@ -345,6 +356,46 @@ mod tests {
             Ok(_) => eprintln!("keyserver: nothing served"),
             Err(e) => eprintln!("keyserver: {e}"),
         }
+    }
+
+    /// Publishing against a local stand-in for the VKS API, so the request we
+    /// build and the reply we parse are exercised without uploading anything
+    /// to public infrastructure.
+    #[test]
+    /// Run it against any server that answers `POST /vks/v1/upload` with
+    /// `{"key_fpr", "status", "token"}` and accepts `POST
+    /// /vks/v1/request-verify`, pointed at by `RGPG_KEYSERVER`. Asserting on
+    /// the request is the point: the upload must be an armored *public* key
+    /// block containing no secret key material.
+    #[ignore = "needs a local stand-in for the VKS API at $RGPG_KEYSERVER"]
+    fn publishes_to_a_local_keyserver() {
+        let cert = crate::keygen::generate(&crate::keygen::KeyGenRequest::new(
+            "Demo <demo@example.invalid>",
+        ))
+        .unwrap()
+        .cert;
+
+        let published = publish(&cert).expect("the mock should accept the upload");
+        eprintln!("fingerprint: {}", published.fingerprint);
+        eprintln!("addresses:   {:?}", published.addresses);
+        eprintln!("token:       {:?}", published.token);
+
+        // The mock echoes a placeholder; what matters is that the reply's
+        // key_fpr is parsed and upper-cased rather than dropped.
+        assert_eq!(published.fingerprint.len(), 40);
+        assert!(published.fingerprint.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(published.token.is_some());
+        assert!(
+            published
+                .addresses
+                .iter()
+                .any(|(a, state)| a == "demo@example.invalid" && state == "unpublished")
+        );
+
+        request_verification(published.token.as_deref().unwrap(), &[
+            "demo@example.invalid".to_string()
+        ])
+        .expect("verification request should be accepted");
     }
 
     #[test]
