@@ -227,6 +227,53 @@ impl Store {
         self.secret_path(fingerprint).exists()
     }
 
+    /// GnuPG's default public keyring, if there is one.
+    pub fn gnupg_keybox() -> Option<PathBuf> {
+        let home = std::env::var_os("GNUPGHOME")
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|h| h.join(".gnupg")))?;
+        let keybox = home.join("pubring.kbx");
+        keybox.exists().then_some(keybox)
+    }
+
+    /// Import every certificate from a GnuPG Keybox.
+    ///
+    /// `pubring.kbx` is a container format of GnuPG's own, not an OpenPGP
+    /// keyring, so `CertParser` cannot read it — which is why importing a
+    /// GnuPG setup used to mean an export/import dance. A Keybox also holds
+    /// X.509 certificates, and those are skipped.
+    ///
+    /// Only public certificates: GnuPG keeps secret keys separately, in
+    /// gpg-agent's own format, and they are reached through the agent instead.
+    pub fn import_keybox(&self, path: impl AsRef<Path>) -> Result<Vec<Cert>> {
+        use sequoia_ipc::keybox::{Keybox, KeyboxRecord};
+
+        let path = path.as_ref();
+        let keybox = Keybox::from_file(path)
+            .map_err(|e| Error::invalid(format!("{} is not a Keybox: {e}", path.display())))?;
+
+        let mut imported = Vec::new();
+        for record in keybox {
+            let Ok(KeyboxRecord::OpenPGP(record)) = record else {
+                continue;
+            };
+            // One unreadable record should not lose the rest of a keyring.
+            let Ok(cert) = record.cert() else {
+                continue;
+            };
+            self.insert(&cert)?;
+            imported.push(cert);
+        }
+
+        if imported.is_empty() {
+            return Err(Error::invalid(format!(
+                "{} holds no OpenPGP certificates",
+                path.display()
+            )));
+        }
+        Ok(imported)
+    }
+
     /// Import every certificate in a keyring or armored file.
     ///
     /// Returns the certificates that were imported, secret keys included: a
@@ -234,6 +281,17 @@ impl Store {
     /// which is what a user dropping a file on the window expects.
     pub fn import_file(&self, path: impl AsRef<Path>) -> Result<Vec<Cert>> {
         let path = path.as_ref();
+
+        // A Keybox announces itself with "KBXf" eight bytes in. Sniffing beats
+        // trusting the extension: people rename these files.
+        let mut magic = [0u8; 12];
+        if let Ok(mut file) = fs::File::open(path)
+            && std::io::Read::read_exact(&mut file, &mut magic).is_ok()
+            && &magic[8..12] == b"KBXf"
+        {
+            return self.import_keybox(path);
+        }
+
         let parser = sequoia_openpgp::cert::CertParser::from_file(path)?;
         let mut imported = Vec::new();
         for cert in parser {
@@ -287,6 +345,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("certs.d"), dir.path().join("secrets")).unwrap();
         (dir, store)
+    }
+
+    /// Against the developer's own GnuPG keyring when there is one. Read-only:
+    /// it imports into a scratch store and never touches ~/.gnupg.
+    #[test]
+    #[ignore = "reads the local GnuPG keyring"]
+    fn imports_the_local_gnupg_keybox() {
+        let Some(keybox) = Store::gnupg_keybox() else {
+            eprintln!("no pubring.kbx; skipping");
+            return;
+        };
+        let (_dir, store) = scratch();
+
+        // Through import_file, so the magic-byte sniffing is exercised too.
+        let imported = store.import_file(&keybox).unwrap();
+        eprintln!("imported {} certificate(s) from {}", imported.len(), keybox.display());
+        for cert in imported.iter().take(3) {
+            eprintln!("  {}", crate::CertSummary::from_cert(cert).primary_user_id);
+        }
+
+        assert!(!imported.is_empty());
+        assert_eq!(store.certs().unwrap().len(), imported.len());
+        // A Keybox holds only public certificates.
+        assert!(imported.iter().all(|c| !c.is_tsk()));
     }
 
     #[test]

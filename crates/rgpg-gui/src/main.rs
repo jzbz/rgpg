@@ -407,7 +407,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
             let _ = slint::spawn_local(async move {
                 let Some(file) = rfd::AsyncFileDialog::new()
                     .set_title("Import certificates")
-                    .add_filter("OpenPGP", &["asc", "pgp", "gpg", "key", "pub", "sec"])
+                    .add_filter("OpenPGP", &["asc", "pgp", "gpg", "key", "pub", "sec", "kbx"])
                     .add_filter("All files", &["*"])
                     .pick_file()
                     .await

@@ -349,8 +349,9 @@ smartcard and YubiKey support.
 
 ## Coming from GnuPG
 
-rgpg does not read `~/.gnupg`, and nothing it does will disturb it. Migrating
-means exporting from GnuPG and importing here:
+rgpg does not read `~/.gnupg`, and nothing it does will disturb it. Public certificates need no export at all: point Import at
+`~/.gnupg/pubring.kbx`. Secret keys still need exporting, since GnuPG keeps
+them in gpg-agent's own format:
 
 ```bash
 gpg --export --armor > /tmp/rgpg-public.asc && gpg --export-secret-keys --armor > /tmp/rgpg-secret.asc
@@ -373,9 +374,11 @@ Three caveats:
 
 Reading `~/.gnupg` in place is possible but not built:
 
-- `pubring.kbx` is GnuPG's Keybox container, not an OpenPGP keyring, so
-  `CertParser` cannot read it. `sequoia-ipc`'s `keybox` module can, which would
-  make a read-only "GnuPG certificates" source a small piece of work.
+- `pubring.kbx` **can be imported directly.** It is GnuPG's Keybox container
+  rather than an OpenPGP keyring, so `CertParser` cannot read it, but
+  `sequoia-ipc`'s `keybox` module can. Point Import at it — the file is
+  recognised by its magic bytes rather than its name — and every public
+  certificate comes across. X.509 records in the same file are skipped.
 - Secret keys under `private-keys-v1.d` are in gpg-agent's own S-expression
   format, not OpenPGP. The only sound way to use them is to ask gpg-agent, via
   `sequoia-keystore`'s gpg-agent backend — which would also solve smartcards and
@@ -387,7 +390,7 @@ Reading `~/.gnupg` in place is possible but not built:
 
 Roughly in the order Kleopatra users would notice them missing:
 
-- **Reading GnuPG's store directly** — see [Coming from GnuPG](#coming-from-gnupg).
+
 - **Smartcard / YubiKey** (`sequoia-keystore-openpgp-card`).
 - **Deleting certificates.** Unlinking the cert-d file is not enough: sequoia-cert-store keeps an authoritative SQLite index beside it, so a removed certificate is still listed by a freshly reopened store. Needs removal support in cert-d, or a different backing store.
 - **Column sorting.** `StandardTableView` emits `sort-ascending`/`sort-descending`;
