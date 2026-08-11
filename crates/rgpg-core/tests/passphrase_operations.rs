@@ -215,7 +215,7 @@ fn encrypt_signed_then_decrypt() {
         assert_ne!(ciphertext, PLAINTEXT);
 
         let mut recovered = Vec::new();
-        let result = ops::decrypt(store, &ciphertext, Some(PASSPHRASE), &mut recovered)
+        let result = ops::decrypt(store, &ciphertext, &[PASSPHRASE], &mut recovered)
             .map_err(|e| format!("decrypt: {e}"))?;
         assert_eq!(recovered, PLAINTEXT);
         assert!(

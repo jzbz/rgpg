@@ -115,14 +115,18 @@ pub fn encrypt(
 }
 
 /// Decrypt a message, verifying any signatures against the store.
+///
+/// `passwords` are candidates, not a single answer: any of them may be a
+/// passphrase unlocking one of our secret keys or a password the message was
+/// encrypted to, and the caller usually cannot tell which the user meant.
 pub fn decrypt(
     store: &Store,
     ciphertext: &[u8],
-    password: Option<&str>,
+    passwords: &[&str],
     mut sink: impl Write,
 ) -> Result<VerifyResult> {
     let policy = policy();
-    let helper = Helper::new(store, password);
+    let helper = Helper::new(store, passwords);
 
     let mut decryptor =
         DecryptorBuilder::from_bytes(ciphertext)?.with_policy(&policy, None, helper)?;
@@ -177,7 +181,7 @@ pub fn sign_cleartext(
 /// wrapped. Returns the text alongside the verdict.
 pub fn verify_inline(store: &Store, signed: &[u8]) -> Result<(Vec<u8>, VerifyResult)> {
     let policy = policy();
-    let helper = Helper::new(store, None);
+    let helper = Helper::new(store, &[]);
 
     let mut verifier = VerifierBuilder::from_bytes(signed)?.with_policy(&policy, None, helper)?;
     let mut text = Vec::new();
@@ -196,7 +200,7 @@ pub fn verify_inline(store: &Store, signed: &[u8]) -> Result<(Vec<u8>, VerifyRes
 /// Verify a detached signature over `data`.
 pub fn verify_detached(store: &Store, signature: &[u8], data: &[u8]) -> Result<VerifyResult> {
     let policy = policy();
-    let helper = Helper::new(store, None);
+    let helper = Helper::new(store, &[]);
 
     let mut verifier =
         DetachedVerifierBuilder::from_bytes(signature)?.with_policy(&policy, None, helper)?;
@@ -246,16 +250,24 @@ fn signing_keypair(
 /// `check` is handed the message structure once the body has been read.
 struct Helper<'a> {
     store: &'a Store,
-    password: Option<Zeroizing<String>>,
+    /// Every secret the caller could offer: a passphrase that unlocks one of
+    /// our keys, a password the message was encrypted to, or both. A single
+    /// slot forced the UI to guess which role the user meant, and it guessed
+    /// wrong — text encrypted to a password could not be decrypted with it.
+    passwords: Vec<Zeroizing<String>>,
     signatures: Vec<SignatureReport>,
     decrypted_with: Option<String>,
 }
 
 impl<'a> Helper<'a> {
-    fn new(store: &'a Store, password: Option<&str>) -> Self {
+    fn new(store: &'a Store, passwords: &[&str]) -> Self {
         Helper {
             store,
-            password: password.map(|p| Zeroizing::new(p.to_owned())),
+            passwords: passwords
+                .iter()
+                .filter(|p| !p.is_empty())
+                .map(|p| Zeroizing::new((*p).to_owned()))
+                .collect(),
             signatures: Vec::new(),
             decrypted_with: None,
         }
@@ -348,8 +360,12 @@ impl DecryptionHelper for Helper<'_> {
                     // try_unlock, not unlock: this walks every key the message
                     // might be addressed to, so one that will not open is a
                     // reason to try the next rather than to fail the decrypt.
-                    let password = self.password.as_deref().map(String::as_str);
-                    let Some(key) = crate::secret::try_unlock(ka.key().clone(), password) else {
+                    // `None` first, which is what opens a key with no
+                    // passphrase, then each secret the caller offered.
+                    let Some(key) = std::iter::once(None)
+                        .chain(self.passwords.iter().map(|p| Some(p.as_str())))
+                        .find_map(|p| crate::secret::try_unlock(ka.key().clone(), p))
+                    else {
                         continue;
                     };
                     let Ok(mut pair) = key.into_keypair() else {
@@ -369,8 +385,8 @@ impl DecryptionHelper for Helper<'_> {
         // A password-encrypted message carries no recipient at all, so try the
         // supplied passphrase against the symmetric envelopes before deciding
         // this message was not meant for us.
-        if let Some(password) = self.password.as_deref().filter(|p| !p.is_empty()) {
-            let password = Password::from(password.as_str());
+        for candidate in &self.passwords {
+            let password = Password::from(candidate.as_str());
             for skesk in skesks {
                 if let Ok((algo, session_key)) = skesk.decrypt(&password)
                     && decrypt(algo, &session_key)
@@ -538,14 +554,14 @@ pub fn sign_detached_file(
 pub fn decrypt_file(
     store: &Store,
     input: &Path,
-    password: Option<&str>,
+    passwords: &[&str],
     output: &Path,
 ) -> Result<VerifyResult> {
     let ciphertext = read(input)?;
     // The output file is created only once the message parses, so a failed
     // decryption does not leave an empty file behind.
     let mut plaintext = Vec::new();
-    let result = decrypt(store, &ciphertext, password, &mut plaintext)?;
+    let result = decrypt(store, &ciphertext, passwords, &mut plaintext)?;
     fs::write(output, &plaintext)
         .map_err(|e| Error::io(format!("writing {}", output.display()), e))?;
     Ok(result)
@@ -607,7 +623,7 @@ mod tests {
         assert!(ciphertext.starts_with(b"-----BEGIN PGP MESSAGE-----"));
 
         let mut plaintext = Vec::new();
-        let result = decrypt(&store, &ciphertext, None, &mut plaintext).unwrap();
+        let result = decrypt(&store, &ciphertext, &[], &mut plaintext).unwrap();
 
         assert_eq!(plaintext, b"attack at dawn");
         assert!(result.all_good(), "signatures: {:?}", result.signatures);
@@ -695,7 +711,7 @@ mod tests {
         .unwrap();
 
         let decrypted = dir.path().join("out.txt");
-        let result = decrypt_file(&store, &encrypted, None, &decrypted).unwrap();
+        let result = decrypt_file(&store, &encrypted, &[], &decrypted).unwrap();
 
         assert!(result.all_good(), "signatures: {:?}", result.signatures);
         assert_eq!(
@@ -736,7 +752,7 @@ mod tests {
         .unwrap();
 
         let output = dir.path().join("out.txt");
-        assert!(decrypt_file(&store, &encrypted, None, &output).is_err());
+        assert!(decrypt_file(&store, &encrypted, &[], &output).is_err());
         assert!(
             !output.exists(),
             "a failed decryption must not create the output file"
@@ -774,7 +790,7 @@ mod tests {
         // The archive must stay readable. Revoking withdraws a key from future
         // use; it does not destroy what was already sent.
         let mut plaintext = Vec::new();
-        decrypt(&store, &ciphertext, None, &mut plaintext).unwrap();
+        decrypt(&store, &ciphertext, &[], &mut plaintext).unwrap();
         assert_eq!(plaintext, b"written while current");
         let _ = dir;
     }
@@ -794,12 +810,54 @@ mod tests {
         .unwrap();
 
         let mut plaintext = Vec::new();
-        decrypt(&store, &ciphertext, Some("hunter2"), &mut plaintext).unwrap();
+        decrypt(&store, &ciphertext, &["hunter2"], &mut plaintext).unwrap();
         assert_eq!(plaintext, b"no keys involved");
 
         // The wrong password must not open it, and neither must none.
-        assert!(decrypt(&store, &ciphertext, Some("hunter3"), &mut Vec::new()).is_err());
-        assert!(decrypt(&store, &ciphertext, None, &mut Vec::new()).is_err());
+        assert!(decrypt(&store, &ciphertext, &["hunter3"], &mut Vec::new()).is_err());
+        assert!(decrypt(&store, &ciphertext, &[], &mut Vec::new()).is_err());
+    }
+
+    /// The notepad offers a key passphrase and a message password in separate
+    /// boxes and cannot know which one opens a given message, so it hands over
+    /// both. Passing only one is what made text encrypted to a password
+    /// impossible to read back.
+    #[test]
+    fn any_of_several_candidate_passwords_opens_a_message() {
+        let (_dir, store) = scratch_store();
+        let mut request = KeyGenRequest::new("Alice <alice@example.org>");
+        request.password = Some("key passphrase".to_string().into());
+        let alice = generate(&request).unwrap().cert;
+        store.insert_secret(&alice).unwrap();
+
+        // Encrypted to Alice's protected key *and* to a message password.
+        let mut ciphertext = Vec::new();
+        encrypt(
+            std::slice::from_ref(&alice),
+            &["message password".to_string()],
+            None,
+            b"either secret opens this",
+            &mut ciphertext,
+        )
+        .unwrap();
+
+        // Whichever order the two are offered in, and with an unrelated one
+        // alongside, exactly one of them works and the message opens.
+        for candidates in [
+            vec!["key passphrase", "message password"],
+            vec!["message password", "key passphrase"],
+            vec!["hunter2", "message password"],
+            vec!["hunter2", "key passphrase"],
+        ] {
+            let mut plaintext = Vec::new();
+            decrypt(&store, &ciphertext, &candidates, &mut plaintext)
+                .unwrap_or_else(|e| panic!("{candidates:?}: {e}"));
+            assert_eq!(plaintext, b"either secret opens this");
+        }
+
+        // And none of them still fails, rather than quietly succeeding.
+        assert!(decrypt(&store, &ciphertext, &["hunter2"], &mut Vec::new()).is_err());
+        assert!(decrypt(&store, &ciphertext, &[], &mut Vec::new()).is_err());
     }
 
     #[test]
@@ -822,13 +880,13 @@ mod tests {
 
         // Alice's key opens it with no password at all.
         let mut by_key = Vec::new();
-        decrypt(&store, &ciphertext, None, &mut by_key).unwrap();
+        decrypt(&store, &ciphertext, &[], &mut by_key).unwrap();
         assert_eq!(by_key, b"either way in");
 
         // And an empty store with only the password opens the same message.
         let (_other_dir, bare) = scratch_store();
         let mut by_password = Vec::new();
-        decrypt(&bare, &ciphertext, Some("shared secret"), &mut by_password).unwrap();
+        decrypt(&bare, &ciphertext, &["shared secret"], &mut by_password).unwrap();
         assert_eq!(by_password, b"either way in");
     }
 

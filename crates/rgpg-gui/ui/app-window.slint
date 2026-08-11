@@ -299,6 +299,9 @@ export component AppWindow inherits Window {
     in property <bool> np-copied: false;
 
     callback open-revoke();
+    /// Put a detail value on the clipboard.
+    callback copy-value(string);
+    callback filter-recipients(string);
     callback open-delete();
     callback delete-run();
     callback open-withdraw();
@@ -688,8 +691,16 @@ export component AppWindow inherits Window {
                                 label: "Fingerprint";
                                 value: root.detail.fingerprint-pretty;
                                 mono: true;
+                                copyable: true;
+                                copy => { root.copy-value(root.detail.fingerprint); }
                             }
-                            FieldRow { label: "Key ID"; value: root.detail.key-id; mono: true; }
+                            FieldRow {
+                                label: "Key ID";
+                                value: root.detail.key-id;
+                                mono: true;
+                                copyable: true;
+                                copy => { root.copy-value(self.value); }
+                            }
                             FieldRow { label: "Algorithm"; value: root.detail.algorithm; }
                             FieldRow { label: "Created"; value: root.detail.created; }
                             FieldRow {
@@ -697,7 +708,12 @@ export component AppWindow inherits Window {
                                 value: root.detail.expires == "" ? "never" : root.detail.expires;
                             }
                             FieldRow { label: "Usage"; value: root.detail.capabilities; }
-                            FieldRow { label: "User IDs"; value: root.detail.user-ids; }
+                            FieldRow {
+                                label: "User IDs";
+                                value: root.detail.user-ids;
+                                copyable: true;
+                                copy => { root.copy-value(self.value); }
+                            }
                         }
 
                         Divider { }
@@ -936,6 +952,7 @@ export component AppWindow inherits Window {
         dismissed => { root.details-open = false; }
         change-expiry => { root.details-open = false; root.open-expiry(); }
         add-user-id => { root.details-open = false; root.open-add-user-id(); }
+        copy-value(text) => { root.copy-value(text); }
         revoke-user-id(uid) => { root.details-open = false; root.open-revoke-user-id(uid); }
         revoke-subkey(fpr) => { root.details-open = false; root.open-revoke-subkey(fpr); }
     }
@@ -967,6 +984,7 @@ export component AppWindow inherits Window {
     }
 
     if root.notepad-open: NotepadDialog {
+        filter-recipients(text) => { root.filter-recipients(text); }
         busy: root.busy;
         recipients: root.se-recipients;
         signers: root.se-signers;

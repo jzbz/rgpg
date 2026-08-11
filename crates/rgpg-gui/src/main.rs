@@ -131,6 +131,10 @@ struct State {
 
     se_input: Option<PathBuf>,
     se_recipients: Vec<Recipient>,
+    /// Narrows the recipient list. Held here rather than in the UI because the
+    /// index a row reports is an index into what is *shown*, so the filter has
+    /// to be applied in the same place the mapping back is done.
+    se_filter: String,
     /// (fingerprint, label) of every certificate that can sign and has a
     /// secret key in the store.
     se_signers: Vec<(String, String)>,
@@ -332,6 +336,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         sort: Sort::MineFirst,
         se_input: None,
         se_recipients: Vec::new(),
+        se_filter: String::new(),
         se_signers: Vec::new(),
         dv_input: None,
         dv_data: None,
@@ -693,6 +698,7 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
                 .collect();
 
             guard.se_recipients = recipients;
+            guard.se_filter.clear();
             guard.se_signers = signers;
 
             push_sign_encrypt(&ui, &guard);
@@ -730,9 +736,11 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
                 return;
             };
             let mut guard = state.lock().unwrap();
-            if let Some(entry) = usize::try_from(index)
+            // Through the filter: `index` counts shown rows, not recipients.
+            if let Some(target) = usize::try_from(index)
                 .ok()
-                .and_then(|i| guard.se_recipients.get_mut(i))
+                .and_then(|i| visible_recipients(&guard).get(i).copied())
+                && let Some(entry) = guard.se_recipients.get_mut(target)
             {
                 entry.selected = !entry.selected;
             }
@@ -862,10 +870,31 @@ fn run_sign_encrypt(
     }
 }
 
-fn push_sign_encrypt(ui: &AppWindow, state: &State) {
-    let rows: Vec<RecipientRow> = state
+/// Positions in `se_recipients` the current filter leaves visible.
+///
+/// The one definition of "shown", used both to build the model and to turn a
+/// clicked row back into a recipient. Deriving it twice from the same function
+/// is what stops the two drifting apart when the filter changes.
+fn visible_recipients(state: &State) -> Vec<usize> {
+    let needle = state.se_filter.trim().to_lowercase();
+    state
         .se_recipients
         .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            needle.is_empty()
+                || r.label.to_lowercase().contains(&needle)
+                || r.sublabel.to_lowercase().contains(&needle)
+                || r.fingerprint.to_lowercase().contains(&needle)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn push_sign_encrypt(ui: &AppWindow, state: &State) {
+    let rows: Vec<RecipientRow> = visible_recipients(state)
+        .into_iter()
+        .map(|i| &state.se_recipients[i])
         .map(|r| RecipientRow {
             fingerprint: r.fingerprint.clone().into(),
             label: r.label.clone().into(),
@@ -882,6 +911,9 @@ fn push_sign_encrypt(ui: &AppWindow, state: &State) {
         .map(|(_, label)| SharedString::from(label.as_str()))
         .collect();
 
+    // Counted over every recipient, not the shown ones: a selection hidden by
+    // the filter is still encrypted to, and a count that dropped when you
+    // typed would say the opposite.
     ui.set_se_selected_count(state.se_recipients.iter().filter(|r| r.selected).count() as i32);
     ui.set_se_recipients(ModelRc::new(VecModel::from(rows)));
     ui.set_se_signers(ModelRc::new(VecModel::from(signers)));
@@ -1063,13 +1095,15 @@ fn run_decrypt_verify(
     }
 
     let output = ops::decrypted_name(&input);
-    let result = ops::decrypt_file(
-        &store,
-        &input,
-        Some(password).filter(|p| !p.is_empty()),
-        &output,
-    )
-    .map_err(|e| format!("Decryption failed: {e}"))?;
+    // One field here, but still a candidate list: the Decrypt/Verify dialog
+    // asks for "the passphrase or password", so the single value it collects
+    // may be either.
+    let candidates: Vec<&str> = Some(password)
+        .filter(|p| !p.is_empty())
+        .into_iter()
+        .collect();
+    let result = ops::decrypt_file(&store, &input, &candidates, &output)
+        .map_err(|e| format!("Decryption failed: {e}"))?;
 
     let written = format!("Decrypted to {}", output.display());
     let summary = if result.signatures.is_empty() {
@@ -1766,6 +1800,33 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
         }
     });
 
+    ui.on_filter_recipients({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move |text| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let mut guard = state.lock().unwrap();
+            guard.se_filter = text.to_string();
+            push_sign_encrypt(&ui, &guard);
+        }
+    });
+
+    ui.on_copy_value({
+        let ui_weak = ui.as_weak();
+        move |text| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            // The row confirms itself in Slint; the status line is for the
+            // case the clipboard refuses, which is otherwise invisible.
+            match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_string())) {
+                Ok(()) => ui.set_status("Copied to the clipboard".into()),
+                Err(e) => ui.set_status(format!("Could not copy: {e}").into()),
+            }
+        }
+    });
+
     ui.on_np_copy({
         let ui_weak = ui.as_weak();
         move || {
@@ -1953,7 +2014,17 @@ fn run_notepad(
                 };
                 return Ok((string_of(verified), summary, tone, result.signatures));
             }
-            let result = ops::decrypt(&store, text.as_bytes(), password, &mut output)
+            // Both fields, as candidates. The notepad shows a key passphrase
+            // and a message password, and which one opens a given message is
+            // not something the dialog can know — passing only the passphrase
+            // is what made text encrypted to a password impossible to read
+            // back.
+            let mut candidates: Vec<&str> = Vec::new();
+            candidates.extend(password);
+            if !secret.is_empty() {
+                candidates.push(secret);
+            }
+            let result = ops::decrypt(&store, text.as_bytes(), &candidates, &mut output)
                 .map_err(|e| format!("Decryption failed: {e}"))?;
 
             let (summary, tone) = if result.signatures.is_empty() {
@@ -2015,6 +2086,7 @@ fn load_signing_targets(ui: &AppWindow, state: &Shared) {
         })
         .collect();
     guard.se_recipients = recipients;
+    guard.se_filter.clear();
     guard.se_signers = signers;
     push_sign_encrypt(ui, &guard);
 }

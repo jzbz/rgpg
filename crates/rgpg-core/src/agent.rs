@@ -426,7 +426,7 @@ mod tests {
         }
 
         let mut plaintext = Vec::new();
-        let result = crate::ops::decrypt(&store, &ciphertext, None, &mut plaintext).unwrap();
+        let result = crate::ops::decrypt(&store, &ciphertext, &[], &mut plaintext).unwrap();
         assert_eq!(plaintext, b"for the card only");
         assert_eq!(result.decrypted_with, Some(card.fingerprint().to_hex()));
         eprintln!("decrypted on the card");

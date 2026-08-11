@@ -1,4 +1,4 @@
-import { ListView } from "std-widgets.slint";
+import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme, Icons, Icon } from "theme.slint";
 import { Btn, Check, DialogShell, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Select, TextArea, Tone, Variant } from "widgets.slint";
 import { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow } from "types.slint";
@@ -882,6 +882,9 @@ export component NotepadDialog inherits DialogShell {
     in property <int> result-tone;
     in property <bool> busy;
     callback toggle-recipient(int);
+    /// Narrows the list below. The count above stays over every recipient, so
+    /// filtering can never look like it deselected someone.
+    callback filter-recipients(string);
     /// action: 0 sign, 1 encrypt, 2 sign and encrypt, 3 decrypt or verify
     callback run(int, string, int, string, string);
     callback copy-output();
@@ -938,13 +941,32 @@ export component NotepadDialog inherits DialogShell {
                         font-size: Theme.t-sm;
                     }
                 }
+                Field {
+                    placeholder: "Filter by name, e-mail or fingerprint";
+                    glyph: Icons.search;
+                    edited(text) => { root.filter-recipients(text); }
+                }
+
                 Rectangle {
-                    height: 200px;
+                    // Flexible rather than a fixed 200px: the card is clamped
+                    // to the window, so a list that cannot give ground pushes
+                    // the buttons off the bottom on a short screen. It shrinks
+                    // to 110px before anything else has to.
+                    min-height: 110px;
+                    preferred-height: 200px;
+                    vertical-stretch: 1;
                     background: Theme.surface-sunken;
                     border-radius: Theme.r-sm;
                     border-width: 1px;
                     border-color: Theme.border;
                     clip: true;
+                    if root.recipients.length == 0: Text {
+                        text: "No one matches that.";
+                        color: Theme.text-faint;
+                        font-size: Theme.t-sm;
+                        x: Theme.s3;
+                        y: Theme.s3;
+                    }
                     ListView {
                         for entry[index] in root.recipients: Rectangle {
                             height: 34px;
@@ -972,6 +994,17 @@ export component NotepadDialog inherits DialogShell {
                                     text: entry.label;
                                     color: Theme.text;
                                     font-size: Theme.t-sm;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                // Beside the name rather than under it: these
+                                // rows are 34px and a second line would halve
+                                // how many fit. It is what tells two keys for
+                                // the same person apart, so it elides last.
+                                Text {
+                                    text: entry.sublabel;
+                                    color: Theme.text-faint;
+                                    font-size: Theme.t-xs;
                                     vertical-alignment: center;
                                     overflow: elide;
                                     horizontal-stretch: 1;
@@ -1117,19 +1150,57 @@ export component DetailsDialog inherits DialogShell {
     callback change-expiry();
     callback add-user-id();
     callback revoke-user-id(string);
+    /// Forwarded to the window, which owns the clipboard.
+    callback copy-value(string);
     callback revoke-subkey(string);
 
     title: root.cert.primary-user-id;
-    subtitle: "Everything the side panel has no room for.";
+    // No subtitle. It said nothing the title did not, and this dialog is the
+    // one that runs out of height: a key you own gains a Change button, an Add
+    // user ID button and a Revoke control on every user ID and subkey, which
+    // is what pushed it past the window. A decorative line is the cheapest
+    // thing to give up.
     card-width: 720px;
 
     VerticalLayout {
         spacing: Theme.s4;
 
+        // The body scrolls and the Close button does not. This dialog stacks
+        // four sections whose length depends on the certificate — a key with
+        // many user IDs, subkeys or certifications is simply taller than any
+        // card, and the card is clamped to the window. Without this the button
+        // was pushed past the bottom edge and clipped away.
+        body := ScrollView {
+            vertical-stretch: 1;
+            // Asks for the full height of its contents, even though it can
+            // scroll. A ScrollView's own preferred height is small, and the
+            // card is sized from `content.preferred-height` — so without this
+            // the card shrinks to fit the scroller rather than the other way
+            // round, and the whole dialog becomes a letterbox.
+            preferred-height: sections.preferred-height;
+            min-height: 220px;
+            viewport-width: self.visible-width;
+            // Taller than the visible area is what gives the ScrollView
+            // something to scroll; without it there is no scrollbar at all.
+            viewport-height: max(self.visible-height, sections.preferred-height);
+
+            sections := VerticalLayout {
+                // Keeps content clear of the scrollbar, which the fluent style
+                // draws over the right edge of the viewport rather than beside
+                // it — without this the "primary" tag sits underneath it.
+                padding-right: Theme.s4;
+                spacing: Theme.s4;
+
         SectionLabel { text: "PRIMARY KEY"; }
         VerticalLayout {
             spacing: Theme.s2;
-            FieldRow { label: "Fingerprint"; value: root.cert.fingerprint-pretty; mono: true; }
+            FieldRow {
+                label: "Fingerprint";
+                value: root.cert.fingerprint-pretty;
+                mono: true;
+                copyable: true;
+                copy => { root.copy-value(root.cert.fingerprint); }
+            }
             FieldRow { label: "Algorithm"; value: root.cert.algorithm; }
             FieldRow { label: "Created"; value: root.cert.created; }
             HorizontalLayout {
@@ -1265,6 +1336,9 @@ export component DetailsDialog inherits DialogShell {
                         wrap: word-wrap;
                     }
                 }
+            }
+        }
+
             }
         }
 

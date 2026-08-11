@@ -374,43 +374,103 @@ export component SectionLabel inherits Text {
 }
 
 // Label on the left, value on the right, for the details pane.
-export component FieldRow inherits HorizontalLayout {
+export component FieldRow inherits Rectangle {
     in property <string> label;
     in property <string> value;
     in property <bool> mono: false;
+    /// Whether this row's value is worth copying. Off by default: an
+    /// "Algorithm" or "Created" row does not need one, and a button on every
+    /// row would be a column of them down the details pane.
+    in property <bool> copyable: false;
+    callback copy();
 
-    spacing: Theme.s3;
-    alignment: start;
+    /// Owned here rather than by the caller, so a row confirms itself and no
+    /// usage site has to hold state for it.
+    property <bool> copied: false;
 
-    Text {
-        text: root.label;
-        width: 92px;
-        color: Theme.text-faint;
-        font-size: Theme.t-sm;
-        vertical-alignment: top;
-    }
+    // A Rectangle tells its parent layout nothing about what is inside it, so
+    // the row has to republish the inner layout's own sizing or every dialog
+    // built from FieldRows measures short and pushes its buttons off the card.
+    min-height: body.min-height;
+    preferred-height: body.preferred-height;
 
-    // Two variants rather than a conditional font-family: leaving the family
-    // unset is what lets the value inherit the platform's UI font.
-    if root.mono: Text {
-        text: root.value;
-        color: Theme.text;
-        font-size: Theme.t-sm;
-        font-family: "monospace";
-        horizontal-stretch: 1;
-        wrap: word-wrap;
-    }
+    // The whole row is the target, not just the icon: an affordance you have
+    // to find by sweeping the pointer around is not one.
+    //
+    // This is why the value is a Text rather than a read-only TextInput. An
+    // input consumes pointer events, so it would both swallow the hover that
+    // reveals the button and make a click ambiguous between starting a
+    // selection and copying. Selecting part of a value by hand is the price;
+    // copying the whole of it in one click is what people actually do with a
+    // fingerprint.
+    touch := TouchArea {
+        enabled: root.copyable;
+        mouse-cursor: root.copyable ? MouseCursor.pointer : MouseCursor.default;
+        clicked => {
+            root.copy();
+            root.copied = true;
+            settle.running = true;
+        }
 
-    if !root.mono: Text {
-        text: root.value;
-        color: Theme.text;
-        font-size: Theme.t-md;
-        horizontal-stretch: 1;
-        wrap: word-wrap;
+        settle := Timer {
+            interval: 1600ms;
+            running: false;
+            triggered => {
+                root.copied = false;
+                self.running = false;
+            }
+        }
+
+        body := HorizontalLayout {
+            spacing: Theme.s3;
+            alignment: start;
+
+            Text {
+                text: root.label;
+                width: 92px;
+                color: Theme.text-faint;
+                font-size: Theme.t-sm;
+                vertical-alignment: top;
+            }
+
+            // Two variants rather than a conditional font-family: leaving the
+            // family unset is what lets the value inherit the platform's UI
+            // font.
+            if root.mono: Text {
+                text: root.value;
+                color: Theme.text;
+                font-size: Theme.t-sm;
+                font-family: "monospace";
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
+
+            if !root.mono: Text {
+                text: root.value;
+                color: Theme.text;
+                font-size: Theme.t-md;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
+
+            if root.copyable: Rectangle {
+                width: 16px;
+                Icon {
+                    glyph: root.copied ? Icons.check : Icons.file;
+                    tint: root.copied ? Theme.ok : Theme.text-faint;
+                    width: 14px;
+                    height: 14px;
+                    y: 2px;
+                    // Kept lit while `copied` so the confirmation is not
+                    // dismissed by the pointer moving away after the click.
+                    opacity: root.copied ? 1.0 : (touch.has-hover ? 1.0 : 0.0);
+                    animate opacity { duration: Theme.fast; }
+                }
+            }
+        }
     }
 }
 
-// Modal shell: scrim, centred card, title, and whatever the caller puts in it.
 export component DialogShell inherits Rectangle {
     in property <string> title;
     in property <string> subtitle: "";
@@ -438,7 +498,14 @@ export component DialogShell inherits Rectangle {
         width: root.card-width;
         // min() rather than max-height: setting both height and max-height is
         // a Slint warning, and the card must never outgrow the window.
-        height: min(content.preferred-height, root.height - 2 * Theme.s6);
+        // s4, not s6: a 32px gutter top and bottom cost 64px of the window,
+        // which on a short screen is the difference between a dialog fitting
+        // and needing to be scrolled by one line.
+        height: min(content.preferred-height, root.height - 2 * Theme.s4);
+        // Belt and braces for the case a dialog's content still cannot fit:
+        // clipped is recoverable, whereas controls drawn outside the card look
+        // like a rendering fault.
+        clip: true;
         background: Theme.surface;
         border-radius: Theme.r-lg;
         border-width: 1px;

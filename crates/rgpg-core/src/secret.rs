@@ -40,6 +40,16 @@ pub fn unlock<R: KeyRole>(
     password: Option<&str>,
 ) -> Result<Key<SecretParts, R>> {
     if !key.secret().is_encrypted() {
+        // Saying nothing here would be worse than pedantic. The operation
+        // succeeds either way, so a passphrase typed against a key that has
+        // none looks accepted — and the next time it is typed wrongly against
+        // a key that *is* protected, the failure is a surprise. It usually
+        // means the wrong key is selected.
+        if password.is_some_and(|p| !p.is_empty()) {
+            return Err(Error::invalid(
+                "this key has no passphrase; leave the passphrase field empty",
+            ));
+        }
         return Ok(key);
     }
     let password: Password = password
@@ -55,6 +65,11 @@ pub fn unlock<R: KeyRole>(
 /// cannot be opened is a reason to try the next one rather than to give up. The
 /// decryption path needs this: a message may name several recipients, and only
 /// one of them has to work.
+///
+/// That includes [`unlock`]'s objection to a passphrase supplied for a key that
+/// has none. There the caller named one key and one passphrase, so a mismatch
+/// is worth reporting; here the same secret is tried against every candidate
+/// key and against the message's own passwords, so it carries no such claim.
 pub fn try_unlock<R: KeyRole>(
     key: Key<SecretParts, R>,
     password: Option<&str>,
@@ -100,7 +115,15 @@ mod tests {
     fn an_unprotected_key_needs_no_passphrase() {
         let key = primary(&KeyGenRequest::new("Alice <alice@example.org>"));
         assert!(!key.secret().is_encrypted());
-        assert!(unlock(key, None).is_ok());
+        assert!(unlock(key.clone(), None).is_ok());
+        assert!(unlock(key.clone(), Some("")).is_ok());
+
+        // A passphrase for a key that has none is refused rather than ignored:
+        // silently accepting it makes the field look checked when it is not.
+        assert!(unlock(key.clone(), Some("hunter2")).is_err());
+        // But not when walking candidates, where the same secret is offered to
+        // every key and to the message's own passwords.
+        assert!(try_unlock(key, Some("hunter2")).is_none());
     }
 
     #[test]
