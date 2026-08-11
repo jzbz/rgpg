@@ -791,6 +791,87 @@ export component RevokeDialog inherits DialogShell {
     }
 }
 
+export component DeleteDialog inherits DialogShell {
+    in property <string> target-name;
+    /// Whether the store holds this certificate's secret half. The whole point
+    /// of the dialog: deleting someone else's public certificate is a tidying
+    /// operation, deleting your own key is destroying the only copy.
+    in property <bool> has-secret;
+    in property <bool> has-revocation;
+    in property <bool> busy;
+    callback run();
+
+    /// Typing the key ID is the confirmation for a secret key. A second button
+    /// press is not a decision, it is a reflex; retyping something forces the
+    /// user to look at *which* key this is.
+    in property <string> confirm-word;
+    property <string> typed;
+    property <bool> confirmed: !root.has-secret || root.typed == root.confirm-word;
+
+    title: root.has-secret ? "Delete your key" : "Delete this certificate";
+    subtitle: root.has-secret
+        ? "Delete " + root.target-name + " and its secret key. Nothing signed with it can be "
+            + "made again, and nothing encrypted to it can be opened again. rgpg has the only "
+            + "copy unless you exported one."
+        : "Remove " + root.target-name + " from this store. Only your local copy goes; their "
+            + "key is unaffected, and you can import it again later.";
+    card-width: 500px;
+
+    VerticalLayout {
+        spacing: Theme.s4;
+
+        if root.has-secret && !root.has-revocation: Text {
+            text: "There is no revocation certificate for this key. If it was ever published, "
+                + "deleting it here leaves no way to tell anyone to stop using it.";
+            color: Theme.danger;
+            font-size: Theme.t-sm;
+            wrap: word-wrap;
+        }
+
+        if root.has-secret && root.has-revocation: Text {
+            text: "The revocation certificate is kept, so a published key can still be "
+                + "retracted afterwards.";
+            color: Theme.text-dim;
+            font-size: Theme.t-sm;
+            wrap: word-wrap;
+        }
+
+        if root.has-secret: VerticalLayout {
+            spacing: 6px;
+            Text {
+                text: "Type " + root.confirm-word + " to confirm";
+                color: Theme.text-dim;
+                font-size: Theme.t-sm;
+            }
+            Field {
+                placeholder: root.confirm-word;
+                enabled: !root.busy;
+                edited(text) => { root.typed = text; }
+            }
+        }
+
+        Divider { }
+
+        HorizontalLayout {
+            spacing: Theme.s2;
+            alignment: end;
+            Btn {
+                text: "Cancel";
+                variant: Variant.ghost;
+                enabled: !root.busy;
+                clicked => { root.dismissed(); }
+            }
+            Btn {
+                text: root.busy ? "Deleting…" : (root.has-secret ? "Delete key" : "Delete");
+                glyph: Icons.trash;
+                variant: Variant.danger;
+                enabled: !root.busy && root.confirmed;
+                clicked => { root.run(); }
+            }
+        }
+    }
+}
+
 export component NotepadDialog inherits DialogShell {
     in property <[RecipientRow]> recipients;
     in property <[string]> signers;

@@ -4,7 +4,7 @@ import {
     Btn, Check, Divider, Field, FieldRow, Monogram, Pill, SectionLabel, Select, Tone, Variant,
 } from "widgets.slint";
 import { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow } from "types.slint";
-import { AboutDialog, CertifyDialog, DecryptVerifyDialog, DetailsDialog, KeygenDialog, LifecycleDialog, LookupDialog, NotepadDialog, RevokeDialog, SignEncryptDialog } from "dialogs.slint";
+import { AboutDialog, CertifyDialog, DecryptVerifyDialog, DetailsDialog, KeygenDialog, LifecycleDialog, LookupDialog, NotepadDialog, DeleteDialog, RevokeDialog, SignEncryptDialog } from "dialogs.slint";
 
 export { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow }
 
@@ -241,6 +241,12 @@ export component AppWindow inherits Window {
     callback toggle-trust-root();
 
     // --- Revocation -------------------------------------------------------
+    in-out property <bool> delete-open: false;
+    in property <string> delete-target: "";
+    in property <bool> delete-has-secret: false;
+    in property <bool> delete-has-revocation: false;
+    in property <string> delete-confirm-word: "";
+
     in-out property <bool> revoke-open: false;
     /// The open dialog withdraws a certification rather than revoking a key.
     in property <bool> revoke-is-certification: false;
@@ -293,6 +299,8 @@ export component AppWindow inherits Window {
     in property <bool> np-copied: false;
 
     callback open-revoke();
+    callback open-delete();
+    callback delete-run();
     callback open-withdraw();
     callback revoke-run(int, string, string);
     callback save-revocation-cert();
@@ -817,6 +825,15 @@ export component AppWindow inherits Window {
                             }
 
                                 Btn {
+                                    text: "Delete…";
+                                    glyph: Icons.trash;
+                                    variant: Variant.danger;
+                                    wide: true;
+                                    enabled: !root.busy;
+                                    clicked => { root.open-delete(); }
+                                }
+
+                                Btn {
                                     text: "All details…";
                                     glyph: Icons.file;
                                     variant: Variant.ghost;
@@ -978,6 +995,16 @@ export component AppWindow inherits Window {
         run(certifier, publishable, introducer, confidence, password) => {
             root.certify-run(certifier, publishable, introducer, confidence, password);
         }
+    }
+
+    if root.delete-open: DeleteDialog {
+        busy: root.busy;
+        target-name: root.delete-target;
+        has-secret: root.delete-has-secret;
+        has-revocation: root.delete-has-revocation;
+        confirm-word: root.delete-confirm-word;
+        dismissed => { root.delete-open = false; }
+        run => { root.delete-run(); }
     }
 
     if root.revoke-open: RevokeDialog {

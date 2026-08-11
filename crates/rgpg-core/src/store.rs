@@ -50,6 +50,8 @@ use crate::error::{Error, Result};
 
 pub struct Store {
     certs: CertStore<'static>,
+    /// Kept so the store can be reopened after a deletion; see [`Store::reopen`].
+    cert_dir: PathBuf,
     secrets_dir: PathBuf,
     /// Fingerprints the user has explicitly designated as trust roots, one per
     /// line. Own keys are roots implicitly — see [`Store::effective_roots`].
@@ -94,17 +96,61 @@ impl Store {
 
         Ok(Store {
             certs: CertStore::open(cert_dir)?,
+            cert_dir: cert_dir.to_path_buf(),
             secrets_dir: secrets_dir.to_path_buf(),
             roots_path: secrets_dir.with_file_name("trust-roots"),
             revocations_dir: secrets_dir.with_file_name("revocations"),
         })
     }
 
-    // Deleting a certificate is not implemented. Unlinking the cert-d file is
-    // not enough: sequoia-cert-store keeps a SQLite index beside it and that
-    // index is authoritative, so a removed certificate is still listed even by
-    // a freshly reopened store. Doing this properly needs removal support in
-    // cert-d, or a different backing store.
+    /// Remove a certificate from the store.
+    ///
+    /// Neither cert-d nor `sequoia-cert-store` offers a removal call, so this
+    /// unlinks the file itself. The SQLite index beside it prunes entries whose
+    /// file has gone, but only during a scan, and scans are rate-limited — so
+    /// *this* store keeps reporting the certificate afterwards. Call
+    /// [`Store::reopen`] for a view that reflects the deletion.
+    ///
+    /// The pre-made revocation certificate is deliberately left behind. If the
+    /// key ever reached a keyserver, that file is the only way to retract it,
+    /// and it cannot be regenerated once the secret key is gone — so the moment
+    /// the key is deleted is exactly when it stops being redundant. Ask for it
+    /// with [`Store::revocation_path`] before deleting if it should go too.
+    pub fn delete(&self, fingerprint: &str, secret_too: bool) -> Result<()> {
+        if self.has_secret(fingerprint) && !secret_too {
+            return Err(Error::invalid(
+                "this certificate has a secret key; deleting it needs to be confirmed",
+            ));
+        }
+
+        // The secret first. If this fails halfway, a store still holding the
+        // public certificate is the recoverable direction to fail in.
+        if secret_too {
+            remove_if_present(&self.secret_path(fingerprint))?;
+        }
+        remove_if_present(&self.cert_path(fingerprint))?;
+        self.set_trust_root(fingerprint, false)?;
+        Ok(())
+    }
+
+    /// A second handle on the same directories, with a fresh index.
+    ///
+    /// The only way to see a deletion, since a live store's index scan is
+    /// rate-limited. Cheap enough for an operation a user performs by hand.
+    pub fn reopen(&self) -> Result<Store> {
+        Store::open(&self.cert_dir, &self.secrets_dir)
+    }
+
+    /// Where cert-d keeps `fingerprint`.
+    ///
+    /// The layout is the lowercase hex fingerprint split after the first two
+    /// characters, which holds for both 40-character v4 fingerprints and
+    /// 64-character v6 ones.
+    fn cert_path(&self, fingerprint: &str) -> PathBuf {
+        let fingerprint = fingerprint.to_lowercase();
+        let (prefix, rest) = fingerprint.split_at(2.min(fingerprint.len()));
+        self.cert_dir.join(prefix).join(rest)
+    }
 
     /// Where the revocation certificate for `fingerprint` lives.
     pub fn revocation_path(&self, fingerprint: &str) -> PathBuf {
@@ -368,6 +414,15 @@ impl Store {
     }
 }
 
+/// Unlink `path`, treating "it was not there" as success.
+fn remove_if_present(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::io(format!("removing {}", path.display()), e)),
+    }
+}
+
 /// Files directly inside `dir`, ignoring anything unreadable.
 fn existing_files(dir: &Path) -> Vec<PathBuf> {
     fs::read_dir(dir)
@@ -503,6 +558,78 @@ mod tests {
             0o600,
             "secret key after reopen",
         );
+    }
+
+    /// Deletion, and the reopen it requires to be visible.
+    #[test]
+    fn deletes_a_public_certificate() {
+        let (_dir, store) = scratch();
+        let cert = crate::keygen::generate(&crate::keygen::KeyGenRequest::new(
+            "Alice <alice@example.org>",
+        ))
+        .unwrap()
+        .cert;
+        store.insert(&cert).unwrap();
+        let fingerprint = cert.fingerprint().to_hex();
+        assert_eq!(store.certs().unwrap().len(), 1);
+
+        store.delete(&fingerprint, false).unwrap();
+
+        // The live store still reports it: its index scan is rate-limited, and
+        // that is exactly why `reopen` exists rather than being optional.
+        let refreshed = store.reopen().unwrap();
+        assert!(refreshed.certs().unwrap().is_empty());
+        assert!(refreshed.lookup(&fingerprint).is_err());
+    }
+
+    /// Deleting a secret key is not something to do by accident.
+    #[test]
+    fn refuses_to_delete_a_secret_key_unasked() {
+        let (_dir, store) = scratch();
+        let generated = crate::keygen::generate(&crate::keygen::KeyGenRequest::new(
+            "Alice <alice@example.org>",
+        ))
+        .unwrap();
+        store.insert_secret(&generated.cert).unwrap();
+        let fingerprint = generated.cert.fingerprint().to_hex();
+        store
+            .save_revocation(
+                &fingerprint,
+                &crate::revoke::armor(&generated.revocation).unwrap(),
+            )
+            .unwrap();
+        store.set_trust_root(&fingerprint, true).unwrap();
+
+        assert!(store.delete(&fingerprint, false).is_err());
+        assert!(
+            store.has_secret(&fingerprint),
+            "the secret key must survive a refusal"
+        );
+        assert_eq!(store.reopen().unwrap().certs().unwrap().len(), 1);
+
+        store.delete(&fingerprint, true).unwrap();
+        assert!(!store.has_secret(&fingerprint));
+        assert!(store.reopen().unwrap().certs().unwrap().is_empty());
+        assert!(
+            !store
+                .trust_roots()
+                .unwrap()
+                .contains(&fingerprint.to_uppercase())
+        );
+
+        // Deliberately kept: once the secret key is gone this file is the only
+        // way to retract a key that already reached a keyserver, and it cannot
+        // be regenerated.
+        assert!(
+            store.has_revocation(&fingerprint),
+            "the revocation certificate must outlive the key",
+        );
+    }
+
+    #[test]
+    fn deleting_something_absent_is_not_an_error() {
+        let (_dir, store) = scratch();
+        store.delete(&"AB".repeat(20), true).unwrap();
     }
 
     #[test]

@@ -364,6 +364,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     wire_decrypt_verify(&ui, &state);
     wire_certify(&ui, &state);
     wire_revoke(&ui, &state);
+    wire_delete(&ui, &state);
     wire_notepad(&ui, &state);
     wire_lifecycle(&ui, &state);
     wire_lookup(&ui, &state);
@@ -2019,6 +2020,98 @@ fn load_signing_targets(ui: &AppWindow, state: &Shared) {
 }
 
 // ----------------------------------------------------------------- revocation
+
+fn wire_delete(ui: &AppWindow, state: &Shared) {
+    ui.on_open_delete({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let detail = ui.get_detail();
+            let fingerprint = detail.fingerprint.to_string();
+            if fingerprint.is_empty() {
+                return;
+            }
+
+            let (has_secret, has_revocation) = {
+                let guard = state.lock().unwrap();
+                (
+                    guard.store.has_secret(&fingerprint),
+                    guard.store.has_revocation(&fingerprint),
+                )
+            };
+
+            ui.set_delete_target(detail.primary_user_id.clone());
+            ui.set_delete_has_secret(has_secret);
+            ui.set_delete_has_revocation(has_revocation);
+            ui.set_delete_confirm_word(detail.key_id.clone());
+            ui.set_delete_open(true);
+        }
+    });
+
+    ui.on_delete_run({
+        let (ui_weak, state) = (ui.as_weak(), state.clone());
+        move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            ui.set_busy(true);
+            ui.set_status("Deleting…".into());
+
+            let (ui_weak, state) = (ui_weak.clone(), state.clone());
+            let fingerprint = ui.get_detail().fingerprint.to_string();
+            std::thread::spawn(move || {
+                let outcome = run_delete(&state, &fingerprint);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(ui) = ui_weak.upgrade() else {
+                        return;
+                    };
+                    ui.set_busy(false);
+                    match outcome {
+                        Ok(message) => {
+                            ui.set_delete_open(false);
+                            reload(&ui, &state);
+                            ui.set_status(message.into());
+                        }
+                        Err(message) => ui.set_status(message.into()),
+                    }
+                });
+            });
+        }
+    });
+}
+
+/// Delete, then swap in a store that can actually see the deletion.
+///
+/// A live `Store` keeps reporting a deleted certificate, because the index
+/// scan that prunes it is rate-limited. Reopening is the only way to get a
+/// current view, and it is I/O, so it happens off the lock like every other
+/// worker here.
+fn run_delete(state: &Shared, fingerprint: &str) -> Result<String, String> {
+    let store = {
+        let guard = state.lock().unwrap();
+        guard.store.clone()
+    };
+
+    let had_secret = store.has_secret(fingerprint);
+    store
+        .delete(fingerprint, had_secret)
+        .map_err(|e| format!("Could not delete the certificate: {e}"))?;
+
+    let refreshed =
+        Arc::new(store.reopen().map_err(|e| {
+            format!("Deleted, but the certificate list could not be refreshed: {e}")
+        })?);
+
+    state.lock().unwrap().store = refreshed;
+
+    Ok(if had_secret {
+        "Key and secret key deleted. The revocation certificate was kept.".to_string()
+    } else {
+        "Certificate deleted.".to_string()
+    })
+}
 
 fn wire_revoke(ui: &AppWindow, state: &Shared) {
     ui.on_open_revoke({
