@@ -248,13 +248,26 @@ partial read of the process — the class of attack Spectre and coldboot fall
 into — yields nothing useful.
 
 That sealing does not survive a *complete* read of the address space, because
-the key it is sealed with lives in that same space. So rgpg refuses to produce a
-core dump, and on Linux refuses to be attached to by a debugger. Passphrase
-fields are also kept off the accessibility bus, which publishes the contents of
-an ordinary text field verbatim and does not exempt password fields.
+the key it is sealed with lives in that same space. What rgpg does about that
+differs by platform, and the gap is wide enough to spell out:
 
-Set `RGPG_ALLOW_DEBUG=1` to turn both off when you need a backtrace. Without it
-a crash leaves nothing in `coredumpctl` and `gdb` will not attach.
+**Linux.** The process is marked non-dumpable. That suppresses the core dump and
+also revokes `ptrace`, including from another process of the same user, so `gdb`
+will not attach and a crash leaves nothing in `coredumpctl`.
+
+**macOS.** Only `RLIMIT_CORE` is set, and that has not been tested on macOS.
+There is no equivalent of the non-dumpable flag, so a debugger run by the same
+user can still attach to a running rgpg and read key material out of it. The
+supported answer is codesigning the release with the hardened runtime and
+without the `get-task-allow` entitlement — not done yet. Until it is, assume the
+macOS build offers none of this paragraph.
+
+Keeping passphrases off the accessibility bus is not platform-specific and
+applies to both. The bus publishes the contents of an ordinary text field
+verbatim and does not exempt password fields.
+
+Set `RGPG_ALLOW_DEBUG=1` to turn off the core-dump and debugger restrictions
+when you need a backtrace.
 
 None of this is a privilege boundary. Key material passes through the GUI
 process, so root, or anything holding `CAP_SYS_PTRACE`, can still read it while

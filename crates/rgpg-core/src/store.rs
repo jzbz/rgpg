@@ -17,8 +17,9 @@
 //!
 //! In use, a key is decrypted for the span of a single operation and dropped.
 //! Sequoia holds it sealed in RAM even while unlocked and zeroes it on drop,
-//! and the GUI process refuses core dumps and debugger attach (see
-//! `rgpg-gui`'s `hardening` module). None of that is a privilege boundary:
+//! and on Linux the GUI process refuses core dumps and debugger attach (see
+//! `rgpg-gui`'s `hardening` module — macOS gets neither until the release is
+//! codesigned with the hardened runtime). None of that is a privilege boundary:
 //! key material does pass through this process, so root — or anything holding
 //! `CAP_SYS_PTRACE` — can still read it.
 //!
