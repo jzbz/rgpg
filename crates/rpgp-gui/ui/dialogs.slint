@@ -1201,12 +1201,13 @@ export component DetailsDialog inherits DialogShell {
                 copyable: true;
                 copy => { root.copy-value(root.cert.fingerprint); }
             }
-            FieldRow { label: "Algorithm"; value: root.cert.algorithm; }
-            FieldRow { label: "Created"; value: root.cert.created; }
+            FieldRow { label: "Algorithm"; value: root.cert.algorithm; mono: true; }
+            FieldRow { label: "Created"; value: root.cert.created; mono: true; }
             HorizontalLayout {
                 FieldRow {
                     label: "Expires";
                     value: root.cert.expires == "" ? "never" : root.cert.expires;
+                    mono: true;
                     horizontal-stretch: 1;
                 }
                 if root.owned: Btn {
@@ -1215,7 +1216,7 @@ export component DetailsDialog inherits DialogShell {
                     clicked => { root.change-expiry(); }
                 }
             }
-            FieldRow { label: "Usage"; value: root.cert.capabilities; }
+            FieldRow { label: "Usage"; value: root.cert.capabilities; mono: true; }
         }
 
         Divider { }
@@ -1230,23 +1231,68 @@ export component DetailsDialog inherits DialogShell {
         }
         VerticalLayout {
             spacing: Theme.s2;
-            for uid in root.user-ids: HorizontalLayout {
+            for uid in root.user-ids: uid-row := HorizontalLayout {
                 spacing: Theme.s2;
-                VerticalLayout {
-                    spacing: 1px;
+                property <bool> copied: false;
+
+                // The text column only, not the whole row: the pills and the
+                // revoke button sit beside it and a row-wide target would take
+                // clicks meant for them.
+                uid-copy := TouchArea {
                     horizontal-stretch: 1;
-                    Text {
-                        text: uid.text;
-                        color: uid.revoked ? Theme.text-faint : Theme.text;
-                        font-size: Theme.t-md;
-                        wrap: word-wrap;
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => {
+                        root.copy-value(uid.text);
+                        uid-row.copied = true;
+                        settle.running = true;
                     }
-                    Text {
-                        text: uid.self-signed == ""
-                            ? "no self-signature"
-                            : "self-signed " + uid.self-signed;
-                        color: Theme.text-faint;
-                        font-size: Theme.t-xs;
+
+                    settle := Timer {
+                        interval: 1600ms;
+                        running: false;
+                        triggered => {
+                            uid-row.copied = false;
+                            self.running = false;
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: Theme.s2;
+                        VerticalLayout {
+                            spacing: 1px;
+                            horizontal-stretch: 1;
+                            Text {
+                                // A user ID is a machine value people compare
+                                // character by character, like the fingerprint
+                                // above it.
+                                text: uid.text;
+                                font-family: "Source Code Pro";
+                                color: uid.revoked ? Theme.text-faint : Theme.text;
+                                font-size: Theme.t-sm;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: uid.self-signed == ""
+                                    ? "no self-signature"
+                                    : "self-signed " + uid.self-signed;
+                                color: Theme.text-faint;
+                                font-size: Theme.t-xs;
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: start;
+                            Icon {
+                                glyph: uid-row.copied ? Icons.check : Icons.file;
+                                tint: uid-row.copied ? Theme.ok : Theme.text-faint;
+                                width: 14px;
+                                height: 14px;
+                                opacity: uid-row.copied
+                                    ? 1.0
+                                    : (uid-copy.has-hover ? 1.0 : 0.0);
+                                animate opacity { duration: Theme.fast; }
+                            }
+                        }
                     }
                 }
                 if uid.is-primary: Pill { text: "primary"; tone: Tone.accent; }
@@ -1278,7 +1324,7 @@ export component DetailsDialog inherits DialogShell {
                         text: key.fingerprint;
                         color: key.revoked ? Theme.text-faint : Theme.text;
                         font-size: Theme.t-sm;
-                        font-family: "monospace";
+                        font-family: "Source Code Pro";
                         overflow: elide;
                     }
                     Text {
@@ -1523,7 +1569,7 @@ export component LookupDialog inherits DialogShell {
                         text: entry.fingerprint-pretty;
                         color: Theme.text-faint;
                         font-size: Theme.t-xs;
-                        font-family: "monospace";
+                        font-family: "Source Code Pro";
                         overflow: elide;
                     }
                 }
@@ -1562,12 +1608,48 @@ export component AboutDialog inherits DialogShell {
     in property <string> version;
     callback open-link();
 
-    title: "rpgp";
-    subtitle: "An OpenPGP certificate manager. Version " + root.version + ".";
+    // No shell title or subtitle: the lockup below is the heading, and a text
+    // "rPGP" above the wordmark would say the same thing twice.
     card-width: 460px;
 
     VerticalLayout {
         spacing: Theme.s4;
+
+        VerticalLayout {
+            spacing: Theme.s2;
+
+            HorizontalLayout {
+                spacing: Theme.s2;
+                alignment: start;
+
+                // Centred by a wrapper rather than by setting `y`, for the
+                // reason given in the rail's copy of this lockup.
+                VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        glyph: Icons.shield;
+                        tint: Theme.accent;
+                        width: 32px;
+                        height: 32px;
+                    }
+                }
+
+                Text {
+                    text: "rPGP";
+                    font-family: "Geo";
+                    color: Theme.text;
+                    font-size: Theme.t-wordmark;
+                    vertical-alignment: center;
+                }
+            }
+
+            Text {
+                text: "An OpenPGP certificate manager. Version " + root.version + ".";
+                color: Theme.text-dim;
+                font-size: Theme.t-md;
+                wrap: word-wrap;
+            }
+        }
 
         // The icon and the pointer cursor are the affordance: Slint has no
         // text decoration, so a link cannot be underlined.

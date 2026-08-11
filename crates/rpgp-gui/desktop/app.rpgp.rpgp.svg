@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The application icon. Not the UI shield rescaled: that is a 2px stroke on a
+  24px grid, which at icon sizes reads as a thin wire on whatever the panel
+  background happens to be. Same silhouette, given a ground of its own and a
+  stroke weight that survives being drawn at 32px.
+
+  The accent is the light-theme value, fixed rather than theme-following: an
+  icon is drawn by the desktop, not by us, and has no idea which theme is in
+  play.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect width="256" height="256" rx="56" ry="56" fill="#3457dc"/>
+  <g transform="translate(46 46) scale(6.4167)"
+     fill="none" stroke="#ffffff" stroke-width="2"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>
+  </g>
+</svg>

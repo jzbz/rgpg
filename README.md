@@ -1,4 +1,4 @@
-# rpgp
+# rPGP
 
 [![CI](https://github.com/jzbz/rpgp/actions/workflows/ci.yml/badge.svg)](https://github.com/jzbz/rpgp/actions/workflows/ci.yml)
 
@@ -118,7 +118,7 @@ Building also needs the Cap'n Proto compiler (`capnp`), for `sequoia-ipc`.
 
 ## Certifying and trust
 
-Two different questions get asked about a certificate, and rpgp shows both
+Two different questions get asked about a certificate, and rPGP shows both
 because confusing them is how people end up trusting the wrong key:
 
 - **Validity** — is the certificate internally sound? Self-signatures check
@@ -154,7 +154,7 @@ for the sizes tested and will need revisiting for a keyring of thousands.
 
 A message can be encrypted to certificates, to passwords, or to both at once —
 the session key is wrapped separately for each, so any one of them opens it.
-Encrypting to a password alone is what `gpg -c` produces, and rpgp now reads
+Encrypting to a password alone is what `gpg -c` produces, and rPGP now reads
 that too: the decryption helper tries the supplied passphrase against the
 symmetric envelopes before concluding a message was not meant for us.
 
@@ -201,7 +201,7 @@ reader. That is not a preference: `scdaemon` holds the card with an exclusive
 PC/SC transaction, so a second process asking the reader directly gets
 `SCARD_E_SHARING_VIOLATION`. It is why Kleopatra goes through gpg-agent too.
 
-Two things follow, both good. **rpgp never sees a PIN** — the agent runs the
+Two things follow, both good. **rPGP never sees a PIN** — the agent runs the
 user's own `pinentry`. And there is no PC/SC dependency.
 
 Signing, certifying and decrypting all work on a card. For the agent to raise
@@ -250,7 +250,7 @@ partial read of the process — the class of attack Spectre and coldboot fall
 into — yields nothing useful.
 
 That sealing does not survive a *complete* read of the address space, because
-the key it is sealed with lives in that same space. What rpgp does about that
+the key it is sealed with lives in that same space. What rPGP does about that
 differs by platform, and the gap is wide enough to spell out:
 
 **Linux.** The process is marked non-dumpable. That suppresses the core dump and
@@ -259,7 +259,7 @@ will not attach and a crash leaves nothing in `coredumpctl`.
 
 **macOS.** Only `RLIMIT_CORE` is set, and that has not been tested on macOS.
 There is no equivalent of the non-dumpable flag, so a debugger run by the same
-user can still attach to a running rpgp and read key material out of it. The
+user can still attach to a running rPGP and read key material out of it. The
 supported answer is codesigning the release with the hardened runtime and
 without the `get-task-allow` entitlement — not done yet. Until it is, assume the
 macOS build offers none of this paragraph.
@@ -279,7 +279,7 @@ buffer. Only the smartcard path avoids this entirely, by never seeing the key.
 
 ## Coming from GnuPG
 
-rpgp does not read `~/.gnupg`, and nothing it does will disturb it. Public certificates need no export at all: point Import at
+rPGP does not read `~/.gnupg`, and nothing it does will disturb it. Public certificates need no export at all: point Import at
 `~/.gnupg/pubring.kbx`. Secret keys still need exporting, since GnuPG keeps
 them in gpg-agent's own format:
 
@@ -294,12 +294,12 @@ pass.
 Three caveats:
 
 - **This copies secret key material.** The keys then exist twice, under two
-  different protections: gpg-agent's, and rpgp's weaker on-disk one. Delete
-  `/tmp/rpgp-secret.asc` afterwards, and understand that rpgp's copy is only as
+  different protections: gpg-agent's, and rPGP's weaker on-disk one. Delete
+  `/tmp/rpgp-secret.asc` afterwards, and understand that rPGP's copy is only as
   safe as the passphrase on it.
 - **Smartcard keys cannot come across.** `--export-secret-keys` emits a stub for
   a key that lives on a YubiKey. Those need the gpg-agent route below.
-- **Ownertrust does not come across.** rpgp has no trust model yet, so
+- **Ownertrust does not come across.** rPGP has no trust model yet, so
   `--export-ownertrust` has nowhere to go.
 
 Reading `~/.gnupg` in place is possible but not built:
@@ -312,7 +312,7 @@ Reading `~/.gnupg` in place is possible but not built:
 - Secret keys under `private-keys-v1.d` are in gpg-agent's own S-expression
   format, not OpenPGP. The only sound way to use them is to ask gpg-agent, via
   `sequoia-keystore`'s gpg-agent backend — which would also solve smartcards and
-  would mean rpgp never holds key material at all.
+  would mean rPGP never holds key material at all.
 - A pre-2.1 `~/.gnupg/pubring.gpg` *is* a plain OpenPGP keyring and imports
   as-is today.
 
@@ -323,3 +323,7 @@ MIT — see [LICENSE](LICENSE).
 Two dependencies add obligations MIT does not, both relevant only when
 shipping binaries: Slint's royalty-free terms require the attribution in the
 About box, and `sequoia-openpgp` is LGPL-2.0-or-later linked statically.
+
+The bundled fonts (Geo, Source Code Pro) are SIL Open Font License 1.1, which
+requires its text to ship with them; it sits beside them in
+`crates/rpgp-gui/ui/fonts`. Icons are Lucide, ISC, likewise.

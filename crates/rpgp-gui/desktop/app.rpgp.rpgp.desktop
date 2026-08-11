@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=rPGP
+GenericName=OpenPGP Certificate Manager
+Comment=Generate, certify, sign, encrypt, decrypt and verify with OpenPGP
+Exec=rpgp
+Icon=app.rpgp.rpgp
+Terminal=false
+Categories=Utility;Security;
+Keywords=OpenPGP;PGP;GPG;encryption;signing;certificate;keyring;
+StartupWMClass=app.rpgp.rpgp

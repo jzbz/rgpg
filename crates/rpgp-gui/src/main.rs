@@ -169,6 +169,10 @@ type Shared = Arc<Mutex<State>>;
 
 // ------------------------------------------------------------------ renderer
 
+/// Matches the basename of `desktop/app.rpgp.rpgp.desktop`, which is how a
+/// Wayland compositor finds the icon for this window.
+const APP_ID: &str = "app.rpgp.rpgp";
+
 /// Set on the restarted process so the software fallback can only happen once.
 const FALLBACK_GUARD: &str = "RPGP_SOFTWARE_FALLBACK";
 
@@ -182,6 +186,17 @@ fn main() -> ExitCode {
     // will not dump core.
     hardening::harden();
     configure_renderer();
+
+    // After the backend is selected and before any window is created: it needs
+    // a platform to talk to, and the id is read when the window is built.
+    //
+    // On Wayland an application cannot set its own taskbar icon at all. The
+    // compositor matches this id against an installed .desktop file and takes
+    // the Icon= from there, so this and desktop/app.rpgp.rpgp.desktop have to
+    // agree or the window gets a generic placeholder.
+    if let Err(e) = slint::set_xdg_app_id(APP_ID) {
+        eprintln!("rpgp: could not set the application id: {e}");
+    }
     install_panic_hook();
 
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {

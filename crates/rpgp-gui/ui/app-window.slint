@@ -6,6 +6,18 @@ import {
 import { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow } from "types.slint";
 import { AboutDialog, CertifyDialog, DecryptVerifyDialog, DetailsDialog, KeygenDialog, LifecycleDialog, LookupDialog, NotepadDialog, DeleteDialog, RevokeDialog, SignEncryptDialog } from "dialogs.slint";
 
+// A bare file import is how Slint registers a custom font; the family it
+// declares ("Geo") is then usable as a font-family anywhere. Slint accepts
+// only ttf/ttc/otf, so this is the site's WOFF2 converted, with the OFL text
+// and the Reserved Font Name notice beside it.
+import "fonts/geo.ttf";
+
+// Machine values — fingerprints, key IDs — in a face chosen for telling 0 from
+// O and 1 from l. Generic "monospace" resolves to whatever the system happens
+// to ship, so the one place a character-by-character comparison actually
+// matters looked different on every platform.
+import "fonts/source-code-pro.ttf";
+
 export { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow }
 
 component RailItem inherits Rectangle {
@@ -165,7 +177,7 @@ component CertListRow inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: "rpgp";
+    title: "rPGP";
     preferred-width: 1180px;
     preferred-height: 760px;
     min-width: 860px;
@@ -337,18 +349,35 @@ export component AppWindow inherits Window {
                     padding-bottom: Theme.s3;
                     spacing: Theme.s2;
 
-                    Icon {
-                        glyph: Icons.shield;
-                        tint: Theme.accent;
-                        width: 20px;
-                        height: 20px;
-                        y: (parent.height - self.height) / 2;
+                    // Centred by a wrapper rather than by setting `y`. Inside
+                    // a layout, `parent.height` is the row *including* its
+                    // padding, which here is 8px top and 12px bottom — so
+                    // centring against it put the glyph on a different axis
+                    // from the text beside it, which centres within the
+                    // content box the layout hands out.
+                    VerticalLayout {
+                        alignment: center;
+                        Icon {
+                            glyph: Icons.shield;
+                            tint: Theme.accent;
+                            // Tracks the wordmark's size: a small shield
+                            // beside a display face reads as an afterthought.
+                            width: 32px;
+                            height: 32px;
+                        }
                     }
 
                     Text {
-                        text: "rpgp";
+                        // rPGP, not rpgp: PGP is an initialism and reads as
+                        // one. The binary, the crates and the paths stay
+                        // lowercase — this is the wordmark, not an identifier.
+                        text: "rPGP";
+                        font-family: "Geo";
                         color: Theme.text;
-                        font-size: Theme.t-xl;
+                        // Geo is a display face and carries the extra size
+                        // where the UI font would just look shouty. Still on
+                        // the type scale rather than a one-off number.
+                        font-size: Theme.t-wordmark;
                         font-weight: Theme.w-bold;
                         vertical-alignment: center;
                     }
@@ -701,16 +730,26 @@ export component AppWindow inherits Window {
                                 copyable: true;
                                 copy => { root.copy-value(self.value); }
                             }
-                            FieldRow { label: "Algorithm"; value: root.detail.algorithm; }
-                            FieldRow { label: "Created"; value: root.detail.created; }
+                            FieldRow {
+                                label: "Algorithm";
+                                value: root.detail.algorithm;
+                                mono: true;
+                            }
+                            FieldRow { label: "Created"; value: root.detail.created; mono: true; }
                             FieldRow {
                                 label: "Expires";
                                 value: root.detail.expires == "" ? "never" : root.detail.expires;
+                                mono: true;
                             }
-                            FieldRow { label: "Usage"; value: root.detail.capabilities; }
+                            FieldRow {
+                                label: "Usage";
+                                value: root.detail.capabilities;
+                                mono: true;
+                            }
                             FieldRow {
                                 label: "User IDs";
                                 value: root.detail.user-ids;
+                                mono: true;
                                 copyable: true;
                                 copy => { root.copy-value(self.value); }
                             }

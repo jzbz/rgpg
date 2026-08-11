@@ -440,7 +440,7 @@ export component FieldRow inherits Rectangle {
                 text: root.value;
                 color: Theme.text;
                 font-size: Theme.t-sm;
-                font-family: "monospace";
+                font-family: "Source Code Pro";
                 horizontal-stretch: 1;
                 wrap: word-wrap;
             }
@@ -523,7 +523,10 @@ export component DialogShell inherits Rectangle {
 
             VerticalLayout {
                 spacing: Theme.s1;
-                Text {
+                // Conditional like the subtitle below, so a dialog that draws
+                // its own heading — About, with the wordmark — does not get an
+                // empty line above it.
+                if root.title != "": Text {
                     text: root.title;
                     color: Theme.text;
                     font-size: Theme.t-xl;
@@ -581,7 +584,7 @@ export component TextArea inherits Rectangle {
             width: scroll.visible-width;
             color: Theme.text;
             font-size: Theme.t-md;
-            font-family: "monospace";
+            font-family: "Source Code Pro";
             single-line: false;
             wrap: word-wrap;
             read-only: !root.enabled;
