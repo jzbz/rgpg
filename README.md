@@ -1,5 +1,7 @@
 # rgpg
 
+[![CI](https://github.com/jzbz/rgpg/actions/workflows/ci.yml/badge.svg)](https://github.com/jzbz/rgpg/actions/workflows/ci.yml)
+
 An OpenPGP certificate manager for Linux and macOS, in the spirit of KDE's
 Kleopatra: a window that lists your certificates and lets you generate, import,
 export, sign, encrypt, decrypt and verify without touching a command line.

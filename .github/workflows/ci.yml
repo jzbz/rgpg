@@ -1,0 +1,125 @@
+# Only official actions are used here on purpose. This is a project about
+# handling secret keys, and a third-party action runs with the same access to
+# the workflow as anything else in it.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push makes an in-flight run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: Format and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # capnproto is not optional: sequoia-ipc's build script runs the capnp
+      # compiler unconditionally. fontconfig is what Slint draws text with on
+      # Linux; macOS uses CoreText instead and needs neither.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y capnproto libfontconfig-dev libsqlite3-dev
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-lint-
+
+      - name: Versions
+        run: cargo --version && cargo clippy --version && cargo fmt --version
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      # Warnings are errors because the tree is at zero, and the only way that
+      # stays true is if letting one through fails the build.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      # macOS is the platform with no local machine behind it, so its result
+      # must not be hidden by Linux failing first.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y capnproto libfontconfig-dev libsqlite3-dev
+
+      - name: Install build dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install capnp
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-test-
+
+      # No display is set up, and none is needed: the GUI tests drive Slint
+      # through its testing backend with no event loop. The five ignored tests
+      # want the developer's own GnuPG keyring or the network, so they stay
+      # ignored here.
+      - name: Test
+        run: cargo test --workspace --locked
+
+  windows:
+    name: Windows (informational)
+    runs-on: windows-latest
+    # Deliberately non-blocking. rgpg is not supported on Windows and this job
+    # does not claim otherwise: the file-permission work in Store is a no-op
+    # off Unix, so a Windows build would write secret keys with default ACLs.
+    # The job exists to tell us whether the code still compiles there, which is
+    # the cheap half of the question, and a red mark here must not gate a
+    # platform the project does support.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install capnproto
+        run: choco install capnproto -y --no-progress
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-check-
+
+      # check, not build: whether it type-checks is the question, and linking a
+      # GUI binary for a platform we do not ship is not worth the minutes.
+      - name: Check
+        run: cargo check --workspace --locked
