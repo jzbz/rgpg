@@ -15,6 +15,14 @@
 //! with it; a key generated without one is not, and then the permissions are
 //! the only thing protecting it — the same trade GnuPG makes.
 //!
+//! On Windows the same two properties are enforced with a DACL naming only the
+//! current user, applied by the call that creates the file; see [`windows_acl`].
+//! One difference is worth knowing rather than glossing: a restrictive
+//! directory means less there than a `0700` directory does on Unix, because
+//! "bypass traverse checking" lets anyone who knows a file's full path reach it
+//! regardless of its parents. The per-file ACL is the control on Windows; the
+//! directory is defence in depth.
+//!
 //! In use, a key is decrypted for the span of a single operation and dropped.
 //! Sequoia holds it sealed in RAM even while unlocked and zeroes it on drop,
 //! and on Linux the GUI process refuses core dumps and debugger attach (see
@@ -440,6 +448,7 @@ fn existing_files(dir: &Path) -> Vec<PathBuf> {
 /// Creating it and then relaxing to `chmod` would leave a window in which
 /// another user could open the file and keep that descriptor across every
 /// later write.
+#[cfg(not(windows))]
 fn create_private(path: &Path) -> Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -455,8 +464,10 @@ fn create_private(path: &Path) -> Result<fs::File> {
 
 /// Restrict a path to the current user.
 ///
-/// A no-op off Unix, where the permission model does not map: Windows would
-/// need an ACL, and pretending otherwise would be worse than being explicit.
+/// Windows has no mode, so `mode` is ignored there and the equivalent ACL is
+/// derived from what the path is; see [`windows_acl`]. On a platform that is
+/// neither, this is a no-op, because inventing a mapping would be worse than
+/// being explicit about not having one.
 #[cfg(unix)]
 fn restrict(path: &Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -464,9 +475,431 @@ fn restrict(path: &Path, mode: u32) -> Result<()> {
         .map_err(|e| Error::io(format!("restricting {}", path.display()), e))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn restrict(path: &Path, _mode: u32) -> Result<()> {
+    windows_acl::restrict(path)
+}
+
+/// See [`create_private`]; on Windows the ACL arrives with the file.
+#[cfg(windows)]
+fn create_private(path: &Path) -> Result<fs::File> {
+    windows_acl::create_private(path)
+}
+
+#[cfg(all(not(unix), not(windows)))]
 fn restrict(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
+}
+
+// ===========================================================================
+// Windows ACLs.
+//
+// Replaces what used to be a no-op. The two properties to reproduce are the
+// ones the Unix code gets from `open(O_CREAT, 0600)` and `chmod`:
+//
+//   1. ATOMIC CREATION. The file must never exist, even for an instant, with
+//      an ACL another user can read. `CreateFileW` takes the security
+//      descriptor as a creation argument, so the ACL is part of making the
+//      file rather than a follow-up call.
+//   2. REPAIR ON OPEN. A store written by an earlier build is already exposed
+//      and the user has no way to know it, so every open rewrites the ACL.
+//
+// One honest difference from Unix, worth knowing before trusting the directory
+// ACL: denying other users traverse rights on the secrets directory is close
+// to decorative on Windows. "Bypass traverse checking"
+// (SeChangeNotifyPrivilege) is granted to Users and Everyone by default and
+// lets anyone who knows a file's full path open it without any rights on its
+// parents. On Windows the per-file ACL is the control and the directory ACL is
+// defence in depth; on Unix the 0700 directory really does gate access.
+// ===========================================================================
+
+#[cfg(windows)]
+mod windows_acl {
+    use std::fs;
+    use std::io;
+    use std::mem;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, HandleOrInvalid, OwnedHandle};
+    use std::path::Path;
+    use std::ptr;
+
+    use windows_sys::Win32::Foundation::{
+        ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, GENERIC_WRITE,
+        GetLastError, LocalFree,
+    };
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW, SetSecurityInfo,
+    };
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl, GetTokenInformation,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+        TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CREATE_ALWAYS, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, WRITE_DAC,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    use crate::error::{Error, Result};
+
+    /// The access-control policy, written down exactly once so the creation
+    /// path and the repair path cannot drift apart.
+    ///
+    /// `D:`   the DACL component of an SDDL security descriptor.
+    /// `P`    SE_DACL_PROTECTED. Not decorative: without it Windows *merges*
+    ///        the parent's inheritable ACEs into the DACL supplied here, so
+    ///        whatever `%LOCALAPPDATA%` and its ancestors hand down comes back
+    ///        and the secret key is readable again.
+    /// `A`    ACCESS_ALLOWED. No deny ACEs are needed: a DACL with no matching
+    ///        ACE already denies.
+    /// `OICI` OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE, on directories only,
+    ///        so anything created inside by a code path that forgets
+    ///        [`create_private`] still lands restricted. Deliberately not `IO`
+    ///        (INHERIT_ONLY): the ACE must apply to the directory itself too.
+    /// `FA`   FILE_ALL_ACCESS (0x001f01ff). The specific mask, not `GA`: the
+    ///        access check does not map generic bits stored in an ACE, it
+    ///        subtracts the mask literally.
+    /// SID    the user this process runs as, written out in full. Emphatically
+    ///        not `CO` (S-1-3-0): CREATOR OWNER is a placeholder substituted
+    ///        only when an inheritable ACE is inherited by a new child, so on a
+    ///        leaf file it stays literal, matches nobody, and the DACL grants
+    ///        no one anything — the write through the creation handle appears
+    ///        to work and the next open fails with ACCESS_DENIED. Not `OW`
+    ///        (S-1-3-4) either: that resolves to whoever the owner happens to
+    ///        be, and where the default owner for objects created by
+    ///        administrators is the Administrators group, it would silently
+    ///        widen the ACL to every local admin.
+    fn sddl(container: bool) -> Result<String> {
+        let sid = current_user_sid()?;
+        let flags = if container { "OICI" } else { "" };
+        Ok(format!("D:P(A;{flags};FA;;;{sid})"))
+    }
+
+    /// Restrict `path` to the current user, replacing whatever DACL it has.
+    ///
+    /// The repair half. Used for directories, which `fs::create_dir_all` has
+    /// already made by the time we are called, and for files a previous build
+    /// left behind.
+    pub(super) fn restrict(path: &Path) -> Result<()> {
+        // Which form of the policy applies is decided by what the path *is*,
+        // not by the `mode` the caller passed: see the wrapper's doc comment.
+        let container = fs::symlink_metadata(path)
+            .map_err(|e| Error::io(format!("inspecting {}", path.display()), e))?
+            .is_dir();
+
+        let descriptor = SecurityDescriptor::from_sddl(&sddl(container)?)?;
+        let dacl = descriptor.dacl()?;
+        let wide = wide_path(path)?;
+
+        // SAFETY: `wide` is a NUL-terminated UTF-16 buffer alive for the call.
+        // `dacl` borrows from `descriptor`, a live local, so the ACL it points
+        // into outlives the call. The owner, group and SACL parameters are
+        // null, which the API documents as "leave this component alone", and
+        // the matching bits are absent from `securityinfo`.
+        // PROTECTED_DACL_SECURITY_INFORMATION is what strips inherited ACEs
+        // already on the object; DACL alone would add ours and keep theirs.
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                dacl,
+                ptr::null(),
+            )
+        };
+        // Returns a WIN32_ERROR directly. GetLastError is meaningless here.
+        if status != ERROR_SUCCESS {
+            return Err(win32(status, format!("restricting {}", path.display())));
+        }
+        drop(descriptor);
+        Ok(())
+    }
+
+    /// Create `path` accessible only to the current user, with the ACL applied
+    /// by the same call that creates the file.
+    pub(super) fn create_private(path: &Path) -> Result<fs::File> {
+        let descriptor = SecurityDescriptor::from_sddl(&sddl(false)?)?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            // Never 1. rgpg spawns gpg-agent, and an inherited handle to an
+            // open secret key file is a hole no ACL closes.
+            bInheritHandle: 0,
+        };
+        let wide = wide_path(path)?;
+
+        // WRITE_DAC is only for the pre-existing-file branch below;
+        // GENERIC_WRITE is what the caller actually wants. The share mode
+        // matches what `fs::OpenOptions` uses, because share mode is a
+        // concurrency setting and not an access-control boundary — the ACL is
+        // the boundary, and an exclusive open would only add spurious sharing
+        // violations when an indexer or scanner holds a transient handle.
+        //
+        // SAFETY: `wide` is a NUL-terminated UTF-16 buffer and `attributes`
+        // (with the descriptor it points at) is alive across the call. The
+        // return value is validated below before being treated as a handle.
+        let raw = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_WRITE | WRITE_DAC,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                &attributes,
+                CREATE_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                ptr::null_mut(),
+            )
+        };
+        // Read the thread's last-error code before anything else can clobber
+        // it. On success it is ERROR_ALREADY_EXISTS exactly when the file was
+        // already there; on failure it is the reason.
+        //
+        // SAFETY: GetLastError takes no arguments and touches no memory.
+        let code = unsafe { GetLastError() };
+
+        // CreateFileW reports failure as INVALID_HANDLE_VALUE, not null.
+        // `HandleOrInvalid` exists for exactly this convention and its TryFrom
+        // is the check; `File::from_raw_handle` would happily wrap -1.
+        //
+        // SAFETY: on success this is an owned, open handle for which
+        // CloseHandle is the correct destructor, and it is not closed anywhere
+        // else here. On failure it is the sentinel, which `HandleOrInvalid`
+        // recognises and does not close.
+        let handle = unsafe { HandleOrInvalid::from_raw_handle(raw) };
+        let handle = OwnedHandle::try_from(handle)
+            .map_err(|_| win32(code, format!("creating {}", path.display())))?;
+
+        if code == ERROR_ALREADY_EXISTS {
+            // CreateFileW applies lpSecurityDescriptor only when it creates the
+            // file; over an existing one the member is documented to be
+            // ignored, so the old ACL survived the truncation. That is the same
+            // semantics as `open(O_CREAT|O_TRUNC, 0600)` on Unix, where the
+            // mode likewise applies only at creation.
+            //
+            // This is repair, not create-then-tighten. The permissive window
+            // predates this call and is not opened by it: on the path where the
+            // file is new, the ACL arrives with the file and nothing runs in
+            // between. Doing it on the handle rather than the path also leaves
+            // no second name lookup to race.
+            let dacl = descriptor.dacl()?;
+            // SAFETY: `handle` is open and was requested with WRITE_DAC, which
+            // this call requires. `dacl` points into `descriptor`, a live
+            // local, so it outlives the call.
+            let status = unsafe {
+                SetSecurityInfo(
+                    handle.as_raw_handle(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    dacl,
+                    ptr::null(),
+                )
+            };
+            if status != ERROR_SUCCESS {
+                return Err(win32(status, format!("restricting {}", path.display())));
+            }
+        }
+
+        drop(descriptor);
+        Ok(fs::File::from(handle))
+    }
+
+    /// A self-relative security descriptor from the SDDL parser, freed with
+    /// `LocalFree` as that function documents.
+    struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
+
+    impl SecurityDescriptor {
+        fn from_sddl(text: &str) -> Result<Self> {
+            let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+            // SAFETY: `wide` is NUL-terminated and alive for the call;
+            // `descriptor` is a valid out-pointer; the size out-parameter is
+            // optional and documented to accept null. On success we take
+            // ownership of the returned allocation.
+            let ok = unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    wide.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                return Err(last_error(format!("parsing the ACL policy {text:?}")));
+            }
+            Ok(Self(descriptor))
+        }
+
+        /// The DACL inside this descriptor.
+        ///
+        /// Borrowed, not owned: it points into the same allocation, so it must
+        /// not outlive `self` and must never be freed separately.
+        fn dacl(&self) -> Result<*const ACL> {
+            let mut present = 0;
+            let mut dacl: *mut ACL = ptr::null_mut();
+            let mut defaulted = 0;
+            // SAFETY: `self.0` is a valid descriptor produced by the SDDL
+            // parser, and the three out-pointers are to live locals.
+            let ok = unsafe {
+                GetSecurityDescriptorDacl(self.0, &mut present, &mut dacl, &mut defaulted)
+            };
+            if ok == 0 {
+                return Err(last_error("reading back the ACL policy"));
+            }
+            // A descriptor with no DACL grants everyone everything. Our SDDL
+            // always has a `D:` component, so this is unreachable — but the
+            // failure mode is bad enough to check rather than assume.
+            if present == 0 || dacl.is_null() {
+                return Err(Error::invalid("the ACL policy produced no DACL"));
+            }
+            Ok(dacl)
+        }
+    }
+
+    impl Drop for SecurityDescriptor {
+        fn drop(&mut self) {
+            // SAFETY: the only constructor stores a non-null pointer returned
+            // by ConvertStringSecurityDescriptorToSecurityDescriptorW, whose
+            // documented deallocator is LocalFree. Drop runs at most once, so
+            // there is no double free, and `dacl()` hands out borrows that
+            // cannot outlive `self`.
+            unsafe { LocalFree(self.0.cast()) };
+        }
+    }
+
+    /// The SID of the user this process runs as, in `S-1-5-21-...` form.
+    ///
+    /// `pub(super)` so the tests can build the same expectation from the same
+    /// place; there is no independent second source for it on a CI runner,
+    /// whose account name is not documented.
+    pub(super) fn current_user_sid() -> Result<String> {
+        let mut raw_token = ptr::null_mut();
+        // SAFETY: GetCurrentProcess returns a pseudo-handle that is always
+        // valid and must never be closed; `raw_token` is a valid out-pointer.
+        let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw_token) };
+        if ok == 0 {
+            return Err(last_error("opening the process token"));
+        }
+        // SAFETY: OpenProcessToken succeeded, so this is an owned, open handle
+        // whose destructor is CloseHandle. Wrapping it here is what closes it,
+        // and nothing else closes it.
+        let token = unsafe { OwnedHandle::from_raw_handle(raw_token) };
+
+        // Sizing call: documented to fail and write the required length.
+        let mut len = 0u32;
+        // SAFETY: a null buffer with length 0 is the documented way to ask for
+        // the size; `len` is a valid out-pointer.
+        unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                ptr::null_mut(),
+                0,
+                &mut len,
+            )
+        };
+        // SAFETY: GetLastError takes no arguments and touches no memory.
+        let code = unsafe { GetLastError() };
+        if code != ERROR_INSUFFICIENT_BUFFER || len == 0 {
+            return Err(win32(code, "sizing the process token"));
+        }
+
+        // TOKEN_USER contains a pointer, so the buffer has to be
+        // pointer-aligned. A `Vec<u8>` is only byte-aligned; a `Vec<u64>` is
+        // aligned enough on every architecture Windows runs on.
+        let mut buffer = vec![0u64; (len as usize).div_ceil(mem::size_of::<u64>())];
+        // SAFETY: the buffer is at least `len` bytes and writable, and `len` is
+        // exactly the size the previous call asked for.
+        let ok = unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                buffer.as_mut_ptr().cast(),
+                len,
+                &mut len,
+            )
+        };
+        if ok == 0 {
+            return Err(last_error("reading the process token"));
+        }
+
+        // SAFETY: on success the buffer holds a TOKEN_USER followed by the SID
+        // it points at. The buffer is u64-aligned, satisfying TOKEN_USER's
+        // alignment, and is at least as large as the API asked for. `buffer`
+        // outlives every use of the SID below.
+        let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+
+        let mut raw_string = ptr::null_mut();
+        // SAFETY: `user.User.Sid` points into `buffer`, which is still alive,
+        // and was written by the kernel as a valid SID. On success we take
+        // ownership of the returned string.
+        let ok = unsafe { ConvertSidToStringSidW(user.User.Sid, &mut raw_string) };
+        if ok == 0 {
+            return Err(last_error("formatting the user SID"));
+        }
+        Ok(LocalString(raw_string).value())
+    }
+
+    /// A NUL-terminated wide string from `LocalAlloc`, freed on drop.
+    struct LocalString(windows_sys::core::PWSTR);
+
+    impl LocalString {
+        fn value(&self) -> String {
+            let mut len = 0;
+            // SAFETY: the pointer is a non-null, NUL-terminated wide string
+            // from the API that produced it, so every read up to and including
+            // the terminator is in bounds.
+            while unsafe { *self.0.add(len) } != 0 {
+                len += 1;
+            }
+            // SAFETY: `len` units starting at the pointer are initialised, as
+            // just established by walking to the terminator.
+            let units = unsafe { std::slice::from_raw_parts(self.0, len) };
+            String::from_utf16_lossy(units)
+        }
+    }
+
+    impl Drop for LocalString {
+        fn drop(&mut self) {
+            // SAFETY: ConvertSidToStringSidW documents LocalFree as the
+            // deallocator, and Drop runs at most once.
+            unsafe { LocalFree(self.0.cast()) };
+        }
+    }
+
+    /// A path as a NUL-terminated UTF-16 buffer.
+    ///
+    /// Through `encode_wide`, never `to_string_lossy`: a Windows path can be
+    /// ill-formed UTF-16, and a lossy round-trip would silently name a
+    /// different file. The path is passed as the caller built it — no
+    /// `canonicalize`, whose `\\?\` prefix the aclapi name-parsing layer is not
+    /// reliably prepared for.
+    fn wide_path(path: &Path) -> Result<Vec<u16>> {
+        let mut units: Vec<u16> = path.as_os_str().encode_wide().collect();
+        // An interior NUL would truncate the name at the FFI boundary and open
+        // something other than what the caller asked for.
+        if units.contains(&0) {
+            return Err(Error::invalid(format!(
+                "{} contains a NUL and cannot be used as a Windows path",
+                path.display()
+            )));
+        }
+        units.push(0);
+        Ok(units)
+    }
+
+    fn win32(code: u32, context: impl Into<String>) -> Error {
+        Error::io(context, io::Error::from_raw_os_error(code as i32))
+    }
+
+    fn last_error(context: impl Into<String>) -> Error {
+        // SAFETY: GetLastError takes no arguments and touches no memory.
+        win32(unsafe { GetLastError() }, context)
+    }
 }
 
 #[cfg(test)]
@@ -630,6 +1063,435 @@ mod tests {
     fn deleting_something_absent_is_not_an_error() {
         let (_dir, store) = scratch();
         store.delete(&"AB".repeat(20), true).unwrap();
+    }
+
+    /// The Windows counterpart of `private_files_are_not_world_readable`.
+    ///
+    /// Windows has no file mode, so the assertion is made against the DACL that is
+    /// really on disk: the ACE count, the SID each ACE names, its access mask, its
+    /// inheritance flags, and the SE_DACL_PROTECTED bit. "The file exists" and
+    /// "the call returned Ok" both pass against the no-op these replace, which is
+    /// the whole reason they are not what is checked.
+    #[cfg(windows)]
+    mod windows_acls {
+        use super::*;
+
+        use std::ffi::c_void;
+        use std::os::windows::ffi::OsStrExt;
+        use std::ptr;
+
+        use windows_sys::Win32::Foundation::{ERROR_SUCCESS, LocalFree};
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW,
+            SDDL_REVISION_1, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+        };
+        use windows_sys::Win32::Security::{
+            ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+            GetAce, GetSecurityDescriptorControl, GetSecurityDescriptorDacl, OBJECT_INHERIT_ACE,
+            PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, UNPROTECTED_DACL_SECURITY_INFORMATION,
+        };
+        use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+        use crate::store::windows_acl::current_user_sid;
+
+        /// S-1-1-0. The principal the tests plant and the code must remove.
+        const EVERYONE: &str = "S-1-1-0";
+        /// ACCESS_ALLOWED_ACE_TYPE. It lives in `Win32_System_SystemServices`, a
+        /// module not otherwise needed and not worth enabling for one zero.
+        const ALLOW: u8 = 0;
+        /// OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE, as they appear in the
+        /// one-byte `AceFlags` of an ACE header.
+        const INHERIT: u8 = (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8;
+
+        #[derive(Debug)]
+        struct Ace {
+            kind: u8,
+            flags: u8,
+            mask: u32,
+            sid: String,
+        }
+
+        #[derive(Debug)]
+        struct Dacl {
+            protected: bool,
+            aces: Vec<Ace>,
+            sddl: String,
+        }
+
+        impl Dacl {
+            fn grants_everyone(&self) -> bool {
+                self.aces.iter().any(|ace| ace.sid == EVERYONE)
+            }
+
+            /// The whole policy in one assertion: nobody but `sid`, full control,
+            /// the right inheritance, and inheritance from the parent switched off.
+            #[track_caller]
+            fn assert_only(&self, sid: &str, flags: u8, what: &str) {
+                assert!(
+                    self.protected,
+                    "{what}: SE_DACL_PROTECTED is not set, so Windows will merge the parent's \
+                     inheritable ACEs back in — {}",
+                    self.sddl
+                );
+                assert_eq!(
+                    self.aces.len(),
+                    1,
+                    "{what}: expected exactly one ACE, got {:#?} — {}",
+                    self.aces,
+                    self.sddl
+                );
+                let ace = &self.aces[0];
+                assert_eq!(ace.kind, ALLOW, "{what}: ACE type — {}", self.sddl);
+                assert_eq!(ace.sid, sid, "{what}: ACE principal — {}", self.sddl);
+                assert_eq!(
+                    ace.mask, FILE_ALL_ACCESS,
+                    "{what}: access mask — {}",
+                    self.sddl
+                );
+                assert_eq!(
+                    ace.flags, flags,
+                    "{what}: inheritance flags — {}",
+                    self.sddl
+                );
+            }
+        }
+
+        fn wide(text: &str) -> Vec<u16> {
+            text.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        fn wide_path(path: &Path) -> Vec<u16> {
+            path.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        }
+
+        fn from_wide(text: windows_sys::core::PWSTR) -> String {
+            let mut len = 0;
+            // SAFETY: the API that produced this pointer guarantees a non-null,
+            // NUL-terminated wide string, so every read up to the terminator is in
+            // bounds.
+            while unsafe { *text.add(len) } != 0 {
+                len += 1;
+            }
+            // SAFETY: `len` units from the start are initialised, as just walked.
+            String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, len) })
+        }
+
+        /// Read the DACL that is actually on disk.
+        fn read_dacl(path: &Path) -> Dacl {
+            let name = wide_path(path);
+            let mut dacl: *mut ACL = ptr::null_mut();
+            let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+            // SAFETY: `name` is a live NUL-terminated wide string; `dacl` and
+            // `descriptor` are valid out-pointers; the owner, group and SACL
+            // out-pointers are null, which the API accepts for components not
+            // named in `securityinfo`.
+            let status = unsafe {
+                GetNamedSecurityInfoW(
+                    name.as_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    &mut dacl,
+                    ptr::null_mut(),
+                    &mut descriptor,
+                )
+            };
+            assert_eq!(
+                status,
+                ERROR_SUCCESS,
+                "reading the ACL of {}: {}",
+                path.display(),
+                io::Error::from_raw_os_error(status as i32)
+            );
+            // A NULL DACL is not an empty one: it grants everyone everything.
+            assert!(
+                !dacl.is_null(),
+                "{} has a NULL DACL, which grants full access to everyone",
+                path.display()
+            );
+
+            let mut control = 0u16;
+            let mut revision = 0u32;
+            // SAFETY: `descriptor` is the live descriptor just returned, and both
+            // out-pointers are to locals.
+            let ok =
+                unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) };
+            assert_ne!(ok, 0, "GetSecurityDescriptorControl on {}", path.display());
+            let protected = control & SE_DACL_PROTECTED != 0;
+
+            // SAFETY: `dacl` points into the live descriptor and is a valid ACL.
+            let count = unsafe { (*dacl).AceCount };
+            let mut aces = Vec::new();
+            for index in 0..u32::from(count) {
+                let mut raw: *mut c_void = ptr::null_mut();
+                // SAFETY: `index` is below the ACL's own AceCount, so it is in
+                // range, and `raw` is a valid out-pointer.
+                let ok = unsafe { GetAce(dacl, index, &mut raw) };
+                assert_ne!(ok, 0, "GetAce({index}) on {}", path.display());
+                // SAFETY: every ACE begins with an ACE_HEADER, whatever its type.
+                let header = unsafe { &*raw.cast::<ACE_HEADER>() };
+                let (kind, flags) = (header.AceType, header.AceFlags);
+                let (mask, sid) = if kind == ALLOW {
+                    // SAFETY: the header says this is an ACCESS_ALLOWED_ACE, whose
+                    // layout is header, mask, then the SID inline from SidStart.
+                    let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+                    let sid = (&raw const ace.SidStart).cast_mut().cast::<c_void>();
+                    (ace.Mask, sid_to_string(sid))
+                } else {
+                    (0, format!("<ACE type {kind}, not an allow ACE>"))
+                };
+                aces.push(Ace {
+                    kind,
+                    flags,
+                    mask,
+                    sid,
+                });
+            }
+
+            let sddl = sddl_of(descriptor);
+            // SAFETY: GetNamedSecurityInfoW documents LocalFree as the deallocator
+            // for the descriptor, and `dacl` — which points inside it — is not used
+            // again after this point.
+            unsafe { LocalFree(descriptor.cast()) };
+            Dacl {
+                protected,
+                aces,
+                sddl,
+            }
+        }
+
+        fn sid_to_string(sid: PSID) -> String {
+            let mut text = ptr::null_mut();
+            // SAFETY: `sid` points at a valid SID inside a live ACE, and `text` is
+            // a valid out-pointer.
+            let ok = unsafe { ConvertSidToStringSidW(sid, &mut text) };
+            assert_ne!(ok, 0, "ConvertSidToStringSidW");
+            let value = from_wide(text);
+            // SAFETY: documented deallocator; `value` already owns a copy.
+            unsafe { LocalFree(text.cast()) };
+            value
+        }
+
+        /// Only ever used to build a panic message: one SDDL line in a CI log is
+        /// far more useful than a decoded ACE dump, but it performs account lookups
+        /// and can fail with ERROR_NONE_MAPPED, so it must not be the assertion.
+        fn sddl_of(descriptor: PSECURITY_DESCRIPTOR) -> String {
+            let mut text = ptr::null_mut();
+            // SAFETY: `descriptor` is live; `text` is a valid out-pointer; the
+            // length out-parameter is optional.
+            let ok = unsafe {
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    descriptor,
+                    SDDL_REVISION_1,
+                    DACL_SECURITY_INFORMATION,
+                    &mut text,
+                    ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                return "<could not be rendered as SDDL>".to_string();
+            }
+            let value = from_wide(text);
+            // SAFETY: documented deallocator; `value` already owns a copy.
+            unsafe { LocalFree(text.cast()) };
+            value
+        }
+
+        /// Put the ACL an older build would have left on `path`: Everyone, full
+        /// control, and unprotected so the parent's ACEs keep flowing in.
+        ///
+        /// Written against the Win32 API directly rather than reusing the store's
+        /// own helpers, so a bug in those cannot quietly turn the setup into a
+        /// no-op and make the repair look successful. Every caller also asserts
+        /// that the damage landed.
+        fn loosen(path: &Path, inheritable: bool) {
+            let flags = if inheritable { "OICI" } else { "" };
+            // Us as well as Everyone, or the test could not clean up after itself.
+            let text = wide(&format!(
+                "D:(A;{flags};FA;;;{EVERYONE})(A;{flags};FA;;;{})",
+                current_user_sid().unwrap()
+            ));
+
+            let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+            // SAFETY: `text` is a live NUL-terminated wide string and `descriptor`
+            // a valid out-pointer; the size out-parameter is optional.
+            let ok = unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    text.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut descriptor,
+                    ptr::null_mut(),
+                )
+            };
+            assert_ne!(ok, 0, "building the test's permissive descriptor");
+
+            let mut dacl: *mut ACL = ptr::null_mut();
+            let (mut present, mut defaulted) = (0, 0);
+            // SAFETY: `descriptor` is live and the out-pointers are to locals.
+            let ok = unsafe {
+                GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted)
+            };
+            assert_ne!(ok, 0, "extracting the test's permissive DACL");
+
+            let name = wide_path(path);
+            // UNPROTECTED, not merely DACL: it has to clear SE_DACL_PROTECTED, or
+            // the "repair an exposed store" case would start from an already
+            // protected object and never exercise the interesting half.
+            //
+            // SAFETY: `name` is live and NUL-terminated; `dacl` points into
+            // `descriptor`, which is alive until after the call.
+            let status = unsafe {
+                SetNamedSecurityInfoW(
+                    name.as_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    dacl,
+                    ptr::null(),
+                )
+            };
+            // SAFETY: documented deallocator; `dacl` is not used again.
+            unsafe { LocalFree(descriptor.cast()) };
+            assert_eq!(
+                status,
+                ERROR_SUCCESS,
+                "loosening {}: {}",
+                path.display(),
+                io::Error::from_raw_os_error(status as i32)
+            );
+        }
+
+        /// Property 1, atomic creation, with the parent stacked against it.
+        ///
+        /// The parent directory is given an inheritable Everyone ACE first. If
+        /// `create_private` passes a descriptor without SE_DACL_PROTECTED, Windows
+        /// merges that ACE into the new file at creation and the secret key is
+        /// world-readable. Without this hostile parent the `P` would be untested:
+        /// a plain tempdir may hand down nothing interesting and the test would
+        /// pass with or without it.
+        #[test]
+        fn a_new_secret_key_is_owner_only_under_a_permissive_parent() {
+            let dir = tempfile::tempdir().unwrap();
+            let parent = dir.path().join("secrets");
+            fs::create_dir(&parent).unwrap();
+
+            loosen(&parent, true);
+            assert!(
+                read_dacl(&parent).grants_everyone(),
+                "the test's own setup did not take: the parent has no Everyone ACE to inherit",
+            );
+
+            let path = parent.join("DEADBEEF.pgp");
+            let mut file = create_private(&path).unwrap();
+            file.write_all(b"pretend transferable secret key").unwrap();
+            drop(file);
+
+            let sid = current_user_sid().unwrap();
+            read_dacl(&path).assert_only(&sid, 0, "a newly created secret key");
+
+            // And the owner is not locked out of their own key. A DACL naming `CO`
+            // would look perfectly tight to the assertion above and grant nobody
+            // anything, including us; only reading the bytes back through a fresh
+            // handle catches that.
+            assert_eq!(fs::read(&path).unwrap(), b"pretend transferable secret key");
+        }
+
+        /// The branch that is easy to miss: `CreateFileW` ignores
+        /// `lpSecurityDescriptor` when the file already exists, so overwriting an
+        /// exposed key keeps its old ACL unless `create_private` notices
+        /// ERROR_ALREADY_EXISTS and re-applies the DACL to the handle it holds.
+        #[test]
+        fn overwriting_an_exposed_key_replaces_its_acl() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("DEADBEEF.pgp");
+            fs::write(&path, b"left behind by an older build").unwrap();
+            loosen(&path, false);
+            assert!(
+                read_dacl(&path).grants_everyone(),
+                "the test's own setup did not take: the file has no Everyone ACE",
+            );
+
+            let mut file = create_private(&path).unwrap();
+            file.write_all(b"rewritten").unwrap();
+            drop(file);
+
+            read_dacl(&path).assert_only(
+                &current_user_sid().unwrap(),
+                0,
+                "a secret key written over an exposed one",
+            );
+            assert_eq!(fs::read(&path).unwrap(), b"rewritten");
+        }
+
+        /// Property 2, repair on open, mirroring the Unix test's chmod-and-reopen.
+        ///
+        /// Goes through `insert_secret` and `save_revocation` rather than calling
+        /// `create_private` directly, so it also proves the real write paths use
+        /// it. The per-file assertion after the reopen is what would fail if
+        /// someone decided the directory ACL's inheritance was enough: propagation
+        /// only adds inherited ACEs after a child's existing explicit ones, it
+        /// never removes them.
+        #[test]
+        fn reopening_repairs_a_store_an_earlier_build_left_exposed() {
+            let (dir, store) = scratch();
+            let secrets = dir.path().join("secrets");
+
+            let request = crate::keygen::KeyGenRequest::new("Alice <alice@example.org>");
+            let generated = crate::keygen::generate(&request).unwrap();
+            store.insert_secret(&generated.cert).unwrap();
+            let fingerprint = generated.cert.fingerprint().to_hex();
+            store
+                .save_revocation(
+                    &fingerprint,
+                    &crate::revoke::armor(&generated.revocation).unwrap(),
+                )
+                .unwrap();
+
+            let sid = current_user_sid().unwrap();
+            let key = store.secret_path(&fingerprint);
+            read_dacl(&secrets).assert_only(&sid, INHERIT, "secrets directory");
+            read_dacl(&key).assert_only(&sid, 0, "secret key");
+            read_dacl(&store.revocations_dir).assert_only(&sid, INHERIT, "revocations directory");
+            read_dacl(&store.revocation_path(&fingerprint)).assert_only(
+                &sid,
+                0,
+                "revocation certificate",
+            );
+
+            // A store written by an earlier version is already exposed, and the
+            // user has no way to know it.
+            loosen(&secrets, true);
+            loosen(&key, false);
+            let (before_dir, before_key) = (read_dacl(&secrets), read_dacl(&key));
+            assert!(
+                before_dir.grants_everyone() && !before_dir.protected,
+                "the test's own setup did not take on the directory — {}",
+                before_dir.sddl,
+            );
+            assert!(
+                before_key.grants_everyone() && !before_key.protected,
+                "the test's own setup did not take on the key — {}",
+                before_key.sddl,
+            );
+
+            let reopened = Store::open(dir.path().join("certs.d"), &secrets).unwrap();
+            read_dacl(&secrets).assert_only(&sid, INHERIT, "secrets directory after reopen");
+            read_dacl(&reopened.secret_path(&fingerprint)).assert_only(
+                &sid,
+                0,
+                "secret key after reopen",
+            );
+            assert!(
+                !fs::read(&key).unwrap().is_empty(),
+                "the repaired key must still be readable by the user who owns it",
+            );
+        }
     }
 
     #[test]

@@ -93,15 +93,47 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-  windows:
-    name: Windows (informational)
+  windows-core:
+    name: Windows (rgpg-core)
     runs-on: windows-latest
-    # Deliberately non-blocking. rgpg is not supported on Windows and this job
-    # does not claim otherwise: the file-permission work in Store is a no-op
-    # off Unix, so a Windows build would write secret keys with default ACLs.
-    # The job exists to tell us whether the code still compiles there, which is
-    # the cheap half of the question, and a red mark here must not gate a
-    # platform the project does support.
+    # Blocking, unlike the informational job below, and the only place the
+    # Windows ACL code is ever executed. Store writes real DACLs on secret keys
+    # now, and the tests that read them back are all that stands between a typo
+    # in an SDDL string and a key file every account on the machine can read.
+    # Narrowed to rgpg-core deliberately: it needs no system SQLite
+    # (sequoia-cert-store forces rusqlite/bundled here) and no nettle (the
+    # workspace selects crypto-rust), so it does not depend on the much larger
+    # bet that the GUI stack builds on Windows.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install capnproto
+        run: choco install capnproto -y --no-progress
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-core-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-core-
+
+      # The lint job runs on Linux and so never sees the cfg(windows) module.
+      - name: Clippy
+        run: cargo clippy -p rgpg-core --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test -p rgpg-core --locked
+
+  windows-workspace:
+    name: Windows workspace (informational)
+    runs-on: windows-latest
+    # Still non-blocking and still only a check. rgpg is not supported on
+    # Windows and linking a GUI binary for a platform we do not ship is not
+    # worth the minutes. The file-permission half of the question moved to the
+    # blocking job above.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -119,7 +151,5 @@ jobs:
           key: ${{ runner.os }}-cargo-check-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-check-
 
-      # check, not build: whether it type-checks is the question, and linking a
-      # GUI binary for a platform we do not ship is not worth the minutes.
       - name: Check
         run: cargo check --workspace --locked

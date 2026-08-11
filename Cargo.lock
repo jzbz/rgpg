@@ -5807,6 +5807,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "windows-sys 0.61.2",
  "z-base-32",
  "zeroize",
 ]

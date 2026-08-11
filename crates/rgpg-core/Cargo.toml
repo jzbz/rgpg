@@ -26,5 +26,18 @@ chrono.workspace = true
 
 zeroize.workspace = true
 
+# Windows ACLs for the secret-key store. windows-sys rather than `windows`:
+# it is already in the lock via tokio, tempfile and dirs-sys, so this unifies
+# onto a copy that is compiled anyway, and it stays pure Rust — no build
+# script, no bundled import libraries, just raw-dylib declarations.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile = "3"
