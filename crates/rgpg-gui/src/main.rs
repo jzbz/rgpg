@@ -16,6 +16,9 @@ use rgpg_core::ops::{self, InputKind, VerifyResult};
 use rgpg_core::revoke::{self, Reason, RevokeRequest};
 use rgpg_core::{CertSummary, Store, wot};
 use slint::{ModelRc, SharedString, VecModel};
+use zeroize::Zeroizing;
+
+mod hardening;
 
 slint::include_modules!();
 
@@ -166,6 +169,10 @@ const FALLBACK_GUARD: &str = "RGPG_SOFTWARE_FALLBACK";
 static NO_GPU_ADAPTER: AtomicBool = AtomicBool::new(false);
 
 fn main() -> ExitCode {
+    // First, before the renderer brings up wgpu and long before any key
+    // material exists: everything after this point is inside a process that
+    // will not dump core.
+    hardening::harden();
     configure_renderer();
     install_panic_hook();
 
@@ -568,7 +575,7 @@ fn wire_keygen(ui: &AppWindow, state: &Shared) {
                     .unwrap_or_default(),
                 standard: keygen::Standard::from_index(standard),
                 validity: expiry_from_index(expiry),
-                password: Some(password.to_string()).filter(|p| !p.is_empty()),
+                password: Some(Zeroizing::new(password.to_string())).filter(|p| !p.is_empty()),
             };
 
             ui.set_busy(true);
@@ -1259,7 +1266,7 @@ fn run_certify(
     } else {
         certify::PARTIAL
     };
-    request.password = Some(password.to_string()).filter(|p| !p.is_empty());
+    request.password = Some(Zeroizing::new(password.to_string())).filter(|p| !p.is_empty());
 
     let count = request.user_ids.len();
     certify::certify(&store, &request).map_err(|e| format!("Certification failed: {e}"))?;
@@ -2170,7 +2177,7 @@ fn run_revoke(
     let mut request = RevokeRequest::new(&target);
     request.reason = reason;
     request.message = message.to_string();
-    request.password = password.map(str::to_owned);
+    request.password = password.map(|p| Zeroizing::new(p.to_owned()));
 
     revoke::revoke_cert(&store, &request).map_err(|e| format!("Revocation failed: {e}"))?;
     Ok((

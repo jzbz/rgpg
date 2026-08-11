@@ -166,6 +166,17 @@ export component Field inherits Rectangle {
         single-line: true;
         read-only: !root.enabled;
         input-type: root.secret ? InputType.password : InputType.text;
+        // input-type only masks the glyphs on screen. Slint's accessibility
+        // pass binds accessible-value to `text` for every TextInput with no
+        // exception for password fields, and AccessKit publishes that
+        // verbatim to AT-SPI and NSAccessibility, so a passphrase would go
+        // out in cleartext to anything watching the bus. Binding it here
+        // pre-empts that pass, which only fills in what is not already set.
+        // tests/accessibility.rs holds this shut.
+        accessible-value: root.secret ? "" : self.text;
+        // The pass sets no accessible-label for a TextInput, so a secret
+        // field would otherwise be announced with neither name nor value.
+        accessible-label: root.placeholder;
         selection-background-color: Theme.accent;
         selection-foreground-color: Theme.accent-ink;
         edited => { root.edited(self.text); }

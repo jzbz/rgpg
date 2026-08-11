@@ -5808,6 +5808,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "z-base-32",
+ "zeroize",
 ]
 
 [[package]]
@@ -5815,11 +5816,14 @@ name = "rgpg-gui"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "i-slint-backend-testing",
  "open",
  "rfd",
  "rgpg-core",
+ "rustix 1.1.4",
  "slint",
  "slint-build",
+ "zeroize",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ use crate::cert::CertSummary;
 use crate::error::{Error, Result};
 use crate::policy;
 use crate::store::Store;
+use zeroize::Zeroizing;
 
 /// Full confidence, in OpenPGP's 0..=255 trust scale.
 pub const FULL: u8 = 120;
@@ -44,7 +45,7 @@ pub struct CertifyRequest {
     /// [`PARTIAL`].
     pub amount: u8,
     pub expires: Option<Duration>,
-    pub password: Option<String>,
+    pub password: Option<Zeroizing<String>>,
 }
 
 impl CertifyRequest {
@@ -133,7 +134,7 @@ pub fn certify(store: &Store, request: &CertifyRequest) -> Result<Cert> {
                     .as_deref()
                     .filter(|p| !p.is_empty())
                     .ok_or_else(|| Error::invalid("this key is passphrase-protected"))?;
-                key.decrypt_secret(&password.into())?
+                key.decrypt_secret(&password.as_str().into())?
             } else {
                 key
             };

@@ -20,6 +20,7 @@ use sequoia_openpgp::{Cert, Packet, PacketPile};
 use crate::error::{Error, Result};
 use crate::policy;
 use crate::store::Store;
+use zeroize::Zeroizing;
 
 /// Why something is being revoked.
 ///
@@ -94,7 +95,7 @@ pub struct RevokeRequest {
     pub reason: Reason,
     /// Free text stored in the revocation for whoever reads it later.
     pub message: String,
-    pub password: Option<String>,
+    pub password: Option<Zeroizing<String>>,
 }
 
 impl RevokeRequest {
@@ -111,7 +112,7 @@ impl RevokeRequest {
 /// Revoke one of our own certificates, and store the result.
 pub fn revoke_cert(store: &Store, request: &RevokeRequest) -> Result<Cert> {
     let cert = store.secret_cert(&request.fingerprint)?;
-    let mut signer = primary_signer(&cert, request.password.as_deref())?;
+    let mut signer = primary_signer(&cert, request.password.as_deref().map(String::as_str))?;
 
     let signature = CertRevocationBuilder::new()
         .set_reason_for_revocation(request.reason.to_openpgp(), request.message.as_bytes())?
@@ -382,7 +383,7 @@ mod tests {
     fn an_emergency_revocation_certificate_works_without_the_passphrase() {
         let (_dir, store) = scratch();
         let mut request = KeyGenRequest::new("Me <me@example.org>");
-        request.password = Some("correct horse".to_string());
+        request.password = Some(Zeroizing::new("correct horse".to_string()));
         let generated = generate(&request).unwrap();
         store.insert_secret(&generated.cert).unwrap();
 

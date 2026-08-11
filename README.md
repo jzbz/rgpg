@@ -232,13 +232,35 @@ directory. They live in their own directory, one binary TSK per file:
 
     $XDG_DATA_HOME/rgpg/secrets/<fingerprint>.pgp
 
-That secret store is scaffold-grade. Keys sit on disk protected only by their
-own passphrase, and every operation that needs one loads it into the GUI
-process. The intended replacement is `sequoia-keystore`, which holds key
-material in a separate daemon — and which is also the only realistic route to
-smartcard and YubiKey support.
+Those files are `0600` in a `0700` directory, tightened every time the store is
+opened rather than only when a key is written, so a store created by an earlier
+build is repaired rather than left exposed. A key generated with a passphrase is
+encrypted with it. A key generated **without** one is not, and then the file
+permissions are all that protects it.
 
 [certd]: https://www.ietf.org/archive/id/draft-nwjw-openpgp-cert-d-02.html
+
+## What protects a key in memory
+
+A key is decrypted for the span of a single operation and then dropped. Sequoia
+keeps it sealed in RAM even while it is unlocked, and zeroes it on drop, so a
+partial read of the process — the class of attack Spectre and coldboot fall
+into — yields nothing useful.
+
+That sealing does not survive a *complete* read of the address space, because
+the key it is sealed with lives in that same space. So rgpg refuses to produce a
+core dump, and on Linux refuses to be attached to by a debugger. Passphrase
+fields are also kept off the accessibility bus, which publishes the contents of
+an ordinary text field verbatim and does not exempt password fields.
+
+Set `RGPG_ALLOW_DEBUG=1` to turn both off when you need a backtrace. Without it
+a crash leaves nothing in `coredumpctl` and `gdb` will not attach.
+
+None of this is a privilege boundary. Key material passes through the GUI
+process, so root, or anything holding `CAP_SYS_PTRACE`, can still read it while
+an operation is in flight — and the passphrase you type cannot be scrubbed at
+all, because Slint's own string type keeps unzeroed copies, including an undo
+buffer. Only the smartcard path avoids this entirely, by never seeing the key.
 
 ## Coming from GnuPG
 

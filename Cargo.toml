@@ -10,6 +10,9 @@ license = "MIT"
 repository = "https://github.com/jzbz/rgpg"
 
 [workspace.dependencies]
+# Clears rgpg's own copies of a passphrase. Sequoia seals its Password type
+# already; this covers the String that exists before it becomes one.
+zeroize = "1"
 rgpg-core = { path = "crates/rgpg-core" }
 
 # Pure-Rust crypto backend. `crypto-rust` is not the default (nettle is), and it

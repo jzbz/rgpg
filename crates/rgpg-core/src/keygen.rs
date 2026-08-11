@@ -8,6 +8,7 @@ use sequoia_openpgp::cert::{CertBuilder, CipherSuite};
 use sequoia_openpgp::packet::Signature;
 
 use crate::error::Result;
+use zeroize::Zeroizing;
 
 /// Key types offered in the new-key dialog.
 ///
@@ -108,7 +109,7 @@ pub struct KeyGenRequest {
     /// can be extended later is the better default, so the GUI pre-fills two
     /// years rather than "never".
     pub validity: Option<Duration>,
-    pub password: Option<String>,
+    pub password: Option<Zeroizing<String>>,
 }
 
 impl KeyGenRequest {
@@ -154,7 +155,7 @@ pub fn generate(request: &KeyGenRequest) -> Result<GeneratedKey> {
     }
 
     if let Some(password) = request.password.as_deref().filter(|p| !p.is_empty()) {
-        builder = builder.set_password(Some(password.into()));
+        builder = builder.set_password(Some(password.as_str().into()));
     }
 
     let (cert, revocation) = builder.generate()?;

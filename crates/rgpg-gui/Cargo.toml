@@ -45,5 +45,18 @@ open = "5"
 
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 
+zeroize.workspace = true
+
+# Already in the dependency graph via slint's accesskit stack; named here to
+# use prctl and setrlimit directly. Uses its linux_raw backend on Linux, so it
+# adds no C dependency.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
+[dev-dependencies]
+# ElementHandle::accessible_value, to assert on what the accessibility tree
+# actually publishes rather than trusting that input-type is enough.
+i-slint-backend-testing = "1.17"
+
 [build-dependencies]
 slint-build = "1.17"

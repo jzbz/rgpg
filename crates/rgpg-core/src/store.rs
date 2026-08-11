@@ -10,10 +10,26 @@
 //! every tool that reads the directory. For now they go in a separate
 //! `$XDG_DATA_HOME/rgpg/secrets` directory, one binary TSK per file.
 //!
-//! That secret store is scaffold-grade: the keys sit on disk with only their
-//! own passphrase protection, and every operation that needs one loads it into
-//! this process. A real replacement is `sequoia-keystore`, which keeps key
-//! material in a separate daemon and is the only route to smartcard support.
+//! Those files are `0600` inside a `0700` directory, tightened on every open
+//! rather than only on create. A key generated with a passphrase is encrypted
+//! with it; a key generated without one is not, and then the permissions are
+//! the only thing protecting it — the same trade GnuPG makes.
+//!
+//! In use, a key is decrypted for the span of a single operation and dropped.
+//! Sequoia holds it sealed in RAM even while unlocked and zeroes it on drop,
+//! and the GUI process refuses core dumps and debugger attach (see
+//! `rgpg-gui`'s `hardening` module). None of that is a privilege boundary:
+//! key material does pass through this process, so root — or anything holding
+//! `CAP_SYS_PTRACE` — can still read it.
+//!
+//! `sequoia-keystore` is not the fix it appears to be, which is why this is
+//! still the design. Its default IPC policy silently degrades to a thread in
+//! the caller's own address space, with no API to detect that it happened;
+//! and forced into a real separate process it still runs as the same user,
+//! authenticates over loopback with a cookie file that user can read, and
+//! exposes an RPC that hands back the secret key. Smartcards go through
+//! gpg-agent instead (see [`crate::agent`]), which is a boundary that means
+//! something only because the key never leaves the card.
 //!
 //! [pgp-cert-d]: https://www.ietf.org/archive/id/draft-nwjw-openpgp-cert-d-02.html
 

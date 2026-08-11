@@ -20,6 +20,7 @@ use sequoia_openpgp::{Cert, KeyHandle};
 use crate::error::{Error, Result};
 use crate::policy;
 use crate::store::Store;
+use zeroize::Zeroizing;
 
 /// What a single signature in a message turned out to be.
 #[derive(Debug, Clone)]
@@ -254,7 +255,7 @@ fn signing_keypair(
 /// `check` is handed the message structure once the body has been read.
 struct Helper<'a> {
     store: &'a Store,
-    password: Option<String>,
+    password: Option<Zeroizing<String>>,
     signatures: Vec<SignatureReport>,
     decrypted_with: Option<String>,
 }
@@ -263,7 +264,7 @@ impl<'a> Helper<'a> {
     fn new(store: &'a Store, password: Option<&str>) -> Self {
         Helper {
             store,
-            password: password.map(str::to_owned),
+            password: password.map(|p| Zeroizing::new(p.to_owned())),
             signatures: Vec::new(),
             decrypted_with: None,
         }
@@ -359,7 +360,7 @@ impl DecryptionHelper for Helper<'_> {
                         else {
                             continue;
                         };
-                        match key.decrypt_secret(&Password::from(password)) {
+                        match key.decrypt_secret(&Password::from(password.as_str())) {
                             Ok(key) => key,
                             Err(_) => continue,
                         }
@@ -385,7 +386,7 @@ impl DecryptionHelper for Helper<'_> {
         // supplied passphrase against the symmetric envelopes before deciding
         // this message was not meant for us.
         if let Some(password) = self.password.as_deref().filter(|p| !p.is_empty()) {
-            let password = Password::from(password);
+            let password = Password::from(password.as_str());
             for skesk in skesks {
                 if let Ok((algo, session_key)) = skesk.decrypt(&password)
                     && decrypt(algo, &session_key)
