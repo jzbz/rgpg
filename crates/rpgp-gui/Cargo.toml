@@ -1,6 +1,6 @@
 [package]
-name = "rgpg-gui"
-description = "Slint front end for rgpg"
+name = "rpgp-gui"
+description = "Slint front end for rpgp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,11 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "rgpg"
+name = "rpgp"
 path = "src/main.rs"
 
 [dependencies]
-rgpg-core.workspace = true
+rpgp-core.workspace = true
 
 # default-features = false keeps two C/C++ dependencies out of the build:
 # `backend-qt`, which the selector compiles in whenever qmake is on PATH and

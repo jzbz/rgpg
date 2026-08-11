@@ -1,4 +1,4 @@
-// Hide the console window on Windows release builds. rgpg targets Linux and
+// Hide the console window on Windows release builds. rpgp targets Linux and
 // macOS today, but the attribute is free and keeps a cross-compile honest.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -8,13 +8,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rgpg_core::cert::format_time;
-use rgpg_core::certify::{self, Certification, CertifyRequest};
-use rgpg_core::keygen::{self, KeyGenRequest, KeyType};
-use rgpg_core::lifecycle;
-use rgpg_core::ops::{self, InputKind, VerifyResult};
-use rgpg_core::revoke::{self, Reason, RevokeRequest};
-use rgpg_core::{CertSummary, Store, wot};
+use rpgp_core::cert::format_time;
+use rpgp_core::certify::{self, Certification, CertifyRequest};
+use rpgp_core::keygen::{self, KeyGenRequest, KeyType};
+use rpgp_core::lifecycle;
+use rpgp_core::ops::{self, InputKind, VerifyResult};
+use rpgp_core::revoke::{self, Reason, RevokeRequest};
+use rpgp_core::{CertSummary, Store, wot};
 use slint::{ModelRc, SharedString, VecModel};
 use zeroize::Zeroizing;
 
@@ -151,7 +151,7 @@ struct State {
     certify_certifiers: Vec<(String, String)>,
 
     /// Certificates found on the network, not yet in the store.
-    lookup_results: Vec<rgpg_core::keyserver::Found>,
+    lookup_results: Vec<rpgp_core::keyserver::Found>,
 
     /// Fingerprint the revoke dialog is about, and whether it is withdrawing a
     /// certification rather than revoking the key itself.
@@ -170,7 +170,7 @@ type Shared = Arc<Mutex<State>>;
 // ------------------------------------------------------------------ renderer
 
 /// Set on the restarted process so the software fallback can only happen once.
-const FALLBACK_GUARD: &str = "RGPG_SOFTWARE_FALLBACK";
+const FALLBACK_GUARD: &str = "RPGP_SOFTWARE_FALLBACK";
 
 /// Raised by the panic hook when the panic was wgpu failing to find an adapter,
 /// so that an unrelated panic is not mistaken for a graphics problem.
@@ -187,7 +187,7 @@ fn main() -> ExitCode {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
         Ok(Ok(())) => ExitCode::SUCCESS,
         Ok(Err(e)) => {
-            eprintln!("rgpg: {e}");
+            eprintln!("rpgp: {e}");
             ExitCode::FAILURE
         }
         Err(payload) => {
@@ -239,12 +239,12 @@ fn configure_renderer() {
         return;
     };
 
-    eprintln!("rgpg: no GPU renderer ({e}); using the software renderer.");
+    eprintln!("rpgp: no GPU renderer ({e}); using the software renderer.");
     if let Err(e) = slint::BackendSelector::new()
         .renderer_name("software".into())
         .select()
     {
-        eprintln!("rgpg: could not select the software renderer either: {e}");
+        eprintln!("rpgp: could not select the software renderer either: {e}");
     }
 }
 
@@ -274,16 +274,16 @@ fn install_panic_hook() {
 /// set once, and the failed attempt leaves the winit event loop half-built.
 fn restart_with_software_renderer() -> ExitCode {
     if std::env::var_os(FALLBACK_GUARD).is_some() {
-        eprintln!("rgpg: the software renderer failed as well; giving up.");
+        eprintln!("rpgp: the software renderer failed as well; giving up.");
         return ExitCode::FAILURE;
     }
 
-    eprintln!("rgpg: no usable GPU adapter, restarting with the software renderer.");
+    eprintln!("rpgp: no usable GPU adapter, restarting with the software renderer.");
 
     let executable = match std::env::current_exe() {
         Ok(path) => path,
         Err(e) => {
-            eprintln!("rgpg: cannot locate this executable to restart it: {e}");
+            eprintln!("rpgp: cannot locate this executable to restart it: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -299,7 +299,7 @@ fn restart_with_software_renderer() -> ExitCode {
         use std::os::unix::process::CommandExt;
         // exec replaces this process, so on success nothing below runs.
         let e = command.exec();
-        eprintln!("rgpg: could not restart: {e}");
+        eprintln!("rpgp: could not restart: {e}");
         ExitCode::FAILURE
     }
 
@@ -308,7 +308,7 @@ fn restart_with_software_renderer() -> ExitCode {
         Ok(status) if status.success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(e) => {
-            eprintln!("rgpg: could not restart: {e}");
+            eprintln!("rpgp: could not restart: {e}");
             ExitCode::FAILURE
         }
     }
@@ -322,7 +322,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let store = match Store::open_default() {
         Ok(store) => store,
         Err(e) => {
-            eprintln!("rgpg: cannot open the certificate store: {e}");
+            eprintln!("rpgp: cannot open the certificate store: {e}");
             return Err(e.into());
         }
     };
@@ -356,7 +356,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            if let Err(e) = open::that_detached("https://rgpg.app/") {
+            if let Err(e) = open::that_detached("https://rpgp.app/") {
                 ui.set_status(format!("Could not open the browser: {e}").into());
             }
         }
@@ -509,7 +509,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
                             match revoke::apply_revocation_file(&guard.store, file.path()) {
                                 Ok(cert) => Ok(format!(
                                     "Revoked {}",
-                                    rgpg_core::CertSummary::from_cert(&cert).primary_user_id
+                                    rpgp_core::CertSummary::from_cert(&cert).primary_user_id
                                 )),
                                 Err(_) => Err(import_error),
                             }
@@ -1464,7 +1464,7 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
             std::thread::spawn(move || {
                 // Off the UI thread: this is a network round trip that can sit
                 // on a DNS timeout for seconds.
-                let outcome = rgpg_core::keyserver::lookup(&query);
+                let outcome = rpgp_core::keyserver::lookup(&query);
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = ui_weak.upgrade() else {
                         return;
@@ -1478,7 +1478,7 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
                             let rows: Vec<LookupRow> = found
                                 .iter()
                                 .map(|f| {
-                                    let summary = rgpg_core::CertSummary::from_cert(&f.cert);
+                                    let summary = rpgp_core::CertSummary::from_cert(&f.cert);
                                     let (name, email) = split_user_id(&summary.primary_user_id);
                                     LookupRow {
                                         primary_user_id: summary.primary_user_id.clone().into(),
@@ -1534,7 +1534,7 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
                     Some(found) => guard
                         .store
                         .insert(&found.cert)
-                        .map(|()| rgpg_core::CertSummary::from_cert(&found.cert).primary_user_id),
+                        .map(|()| rpgp_core::CertSummary::from_cert(&found.cert).primary_user_id),
                     None => return,
                 }
             };
@@ -1712,7 +1712,7 @@ fn run_lifecycle(
             let cert = store
                 .lookup(fingerprint)
                 .map_err(|e| format!("Certificate unavailable: {e}"))?;
-            let published = rgpg_core::keyserver::publish(&cert)
+            let published = rpgp_core::keyserver::publish(&cert)
                 .map_err(|e| format!("Publishing failed: {e}"))?;
 
             let pending: Vec<String> = published
@@ -1727,7 +1727,7 @@ fn run_lifecycle(
             let mut message = format!("Published {}", published.fingerprint);
             if let Some(token) = published.token.as_deref()
                 && !pending.is_empty()
-                && rgpg_core::keyserver::request_verification(token, &pending).is_ok()
+                && rpgp_core::keyserver::request_verification(token, &pending).is_ok()
             {
                 message.push_str(&format!(
                     ". Confirmation mail sent to {}; the address is not served until it is confirmed.",
@@ -1754,7 +1754,7 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
                 return;
             };
 
-            let user_ids: Vec<UserIdDetailRow> = rgpg_core::cert::user_ids(&cert)
+            let user_ids: Vec<UserIdDetailRow> = rpgp_core::cert::user_ids(&cert)
                 .iter()
                 .map(|u| UserIdDetailRow {
                     text: u.text.clone().into(),
@@ -1763,7 +1763,7 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
                     self_signed: format_time(u.self_signed).into(),
                 })
                 .collect();
-            let subkeys: Vec<SubkeyRow> = rgpg_core::cert::subkeys(&cert)
+            let subkeys: Vec<SubkeyRow> = rpgp_core::cert::subkeys(&cert)
                 .iter()
                 .map(|k| SubkeyRow {
                     fingerprint: k.fingerprint.clone().into(),
@@ -1907,7 +1907,7 @@ fn run_notepad(
     signer_index: i32,
     password: &str,
     secret: &str,
-) -> Result<(String, String, i32, Vec<rgpg_core::ops::SignatureReport>), String> {
+) -> Result<(String, String, i32, Vec<rpgp_core::ops::SignatureReport>), String> {
     // Snapshot what is needed and release the lock: everything below is I/O,
     // and a card PIN prompt can hold it for a minute while the UI waits.
     let (store, signers, chosen) = {
@@ -2393,7 +2393,7 @@ fn reload(ui: &AppWindow, state: &Shared) {
     let explicit_roots = guard.store.trust_roots().unwrap_or_default();
     let authenticated = wot::authenticate_all(&certs, &roots);
     // One round trip to gpg-agent for the whole store, not one per row.
-    let agent_keys = rgpg_core::agent::annotate(&certs);
+    let agent_keys = rpgp_core::agent::annotate(&certs);
 
     // The secret half lives outside cert-d, so ask the store which ones it has.
     let State { store, all, .. } = &mut *guard;

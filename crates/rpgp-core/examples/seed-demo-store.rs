@@ -1,7 +1,7 @@
 //! Fill a store with throwaway keys and a small web of trust, so the GUI can be
 //! looked at with content in it. Never point this at a real store.
 //!
-//!     XDG_DATA_HOME=/tmp/demo cargo run -p rgpg-core --example seed-demo-store
+//!     XDG_DATA_HOME=/tmp/demo cargo run -p rpgp-core --example seed-demo-store
 //!
 //! The resulting graph covers every state the trust column can show:
 //!
@@ -12,9 +12,9 @@
 //!     Radia              partially certified by Ada    -> partly verified
 //!     Linus              nobody has vouched for them   -> unverified
 
-use rgpg_core::Store;
-use rgpg_core::certify::{CertifyRequest, PARTIAL, certify};
-use rgpg_core::keygen::{KeyGenRequest, KeyType, generate};
+use rpgp_core::Store;
+use rpgp_core::certify::{CertifyRequest, PARTIAL, certify};
+use rpgp_core::keygen::{KeyGenRequest, KeyType, generate};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = Store::open_default()?;
@@ -100,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let secrets = dirs::data_dir()
         .ok_or("no data directory")?
-        .join("rgpg")
+        .join("rpgp")
         .join("secrets")
         .join(format!("{barbara}.pgp"));
     std::fs::remove_file(&secrets)?;
@@ -125,7 +125,7 @@ fn make(
         // Same as the GUI's key generation: keep the revocation certificate.
         store.save_revocation(
             &key.cert.fingerprint().to_hex(),
-            &rgpg_core::revoke::armor(&key.revocation)?,
+            &rpgp_core::revoke::armor(&key.revocation)?,
         )?;
     } else {
         store.insert(&key.cert)?;

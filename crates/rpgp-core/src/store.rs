@@ -3,12 +3,12 @@
 //! Public certificates live in a [pgp-cert-d] directory, the same layout `sq`
 //! uses, so certificates are shared with other Sequoia tooling instead of being
 //! locked inside this app. The default location is
-//! `$XDG_DATA_HOME/pgp.cert.d`; set `RGPG_CERT_STORE` to override it.
+//! `$XDG_DATA_HOME/pgp.cert.d`; set `RPGP_CERT_STORE` to override it.
 //!
 //! Secret keys are *not* stored there. cert-d is a store of public
 //! certificates, and mixing transferable secret keys into it would leak them to
 //! every tool that reads the directory. For now they go in a separate
-//! `$XDG_DATA_HOME/rgpg/secrets` directory, one binary TSK per file.
+//! `$XDG_DATA_HOME/rpgp/secrets` directory, one binary TSK per file.
 //!
 //! Those files are `0600` inside a `0700` directory, tightened on every open
 //! rather than only on create. A key generated with a passphrase is encrypted
@@ -26,7 +26,7 @@
 //! In use, a key is decrypted for the span of a single operation and dropped.
 //! Sequoia holds it sealed in RAM even while unlocked and zeroes it on drop,
 //! and on Linux the GUI process refuses core dumps and debugger attach (see
-//! `rgpg-gui`'s `hardening` module — macOS gets neither until the release is
+//! `rpgp-gui`'s `hardening` module — macOS gets neither until the release is
 //! codesigned with the hardened runtime). None of that is a privilege boundary:
 //! key material does pass through this process, so root — or anything holding
 //! `CAP_SYS_PTRACE` — can still read it.
@@ -72,7 +72,7 @@ pub struct Store {
 impl Store {
     /// Open the default store, creating both directories if they are missing.
     pub fn open_default() -> Result<Self> {
-        let cert_dir = match std::env::var_os("RGPG_CERT_STORE") {
+        let cert_dir = match std::env::var_os("RPGP_CERT_STORE") {
             Some(dir) => PathBuf::from(dir),
             None => dirs::data_dir()
                 .ok_or(Error::NoStoreDir)?
@@ -80,7 +80,7 @@ impl Store {
         };
         let secrets_dir = dirs::data_dir()
             .ok_or(Error::NoStoreDir)?
-            .join("rgpg")
+            .join("rpgp")
             .join("secrets");
         Self::open(cert_dir, secrets_dir)
     }
@@ -626,7 +626,7 @@ mod windows_acl {
         let attributes = SECURITY_ATTRIBUTES {
             nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
-            // Never 1. rgpg spawns gpg-agent, and an inherited handle to an
+            // Never 1. rpgp spawns gpg-agent, and an inherited handle to an
             // open secret key file is a hole no ACL closes.
             bInheritHandle: 0,
         };

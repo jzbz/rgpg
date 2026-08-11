@@ -5789,45 +5789,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rgpg-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "dirs",
- "futures",
- "reqwest",
- "sequoia-cert-store",
- "sequoia-gpg-agent",
- "sequoia-ipc",
- "sequoia-openpgp",
- "sequoia-wot",
- "serde_json",
- "sha1",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "windows-sys 0.61.2",
- "z-base-32",
- "zeroize",
-]
-
-[[package]]
-name = "rgpg-gui"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "i-slint-backend-testing",
- "open",
- "rfd",
- "rgpg-core",
- "rustix 1.1.4",
- "slint",
- "slint-build",
- "zeroize",
-]
-
-[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5869,6 +5830,45 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "rpgp-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs",
+ "futures",
+ "reqwest",
+ "sequoia-cert-store",
+ "sequoia-gpg-agent",
+ "sequoia-ipc",
+ "sequoia-openpgp",
+ "sequoia-wot",
+ "serde_json",
+ "sha1",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "windows-sys 0.61.2",
+ "z-base-32",
+ "zeroize",
+]
+
+[[package]]
+name = "rpgp-gui"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "i-slint-backend-testing",
+ "open",
+ "rfd",
+ "rpgp-core",
+ "rustix 1.1.4",
+ "slint",
+ "slint-build",
+ "zeroize",
 ]
 
 [[package]]

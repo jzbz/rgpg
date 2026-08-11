@@ -1,4 +1,4 @@
-//! Backend for rgpg: everything that does not draw pixels.
+//! Backend for rpgp: everything that does not draw pixels.
 //!
 //! The GUI crate is expected to depend only on this crate's types, never on
 //! `sequoia_openpgp` directly, so that the OpenPGP implementation stays

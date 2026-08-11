@@ -6,7 +6,7 @@
 //! `SCARD_E_SHARING_VIOLATION` — shared *and* exclusive modes both fail. Going
 //! through the agent sidesteps the fight entirely.
 //!
-//! It also keeps rgpg out of the PIN business: the agent runs the user's own
+//! It also keeps rpgp out of the PIN business: the agent runs the user's own
 //! `pinentry`, so the passphrase or card PIN never passes through this process.
 //!
 //! `sequoia-gpg-agent` is async and the rest of this crate is not, so calls are
@@ -43,7 +43,7 @@ impl AgentKey {
 
 /// The runtime the agent calls are driven on.
 ///
-/// One per process, built lazily: most runs of rgpg never touch the agent, and
+/// One per process, built lazily: most runs of rpgp never touch the agent, and
 /// spinning up a runtime for them would be waste.
 fn runtime() -> Result<&'static Runtime> {
     static RUNTIME: OnceLock<std::result::Result<Runtime, String>> = OnceLock::new();
@@ -304,15 +304,15 @@ mod tests {
         );
     }
 
-    /// Signs with whatever `RGPG_TEST_CERT` points at, through the agent.
+    /// Signs with whatever `RPGP_TEST_CERT` points at, through the agent.
     ///
     /// `#[ignore]` because it is interactive: a card key makes the agent's
     /// pinentry ask for the PIN, and an unattended run would hang on it.
     #[test]
     #[ignore = "interactive: the agent will prompt for a PIN or passphrase"]
     fn signs_through_the_agent() {
-        let Some(path) = std::env::var_os("RGPG_TEST_CERT") else {
-            eprintln!("RGPG_TEST_CERT unset; skipping");
+        let Some(path) = std::env::var_os("RPGP_TEST_CERT") else {
+            eprintln!("RPGP_TEST_CERT unset; skipping");
             return;
         };
 
@@ -341,8 +341,8 @@ mod tests {
     #[test]
     #[ignore = "interactive: the agent will prompt for a PIN or passphrase"]
     fn decrypts_and_certifies_through_the_agent() {
-        let Some(path) = std::env::var_os("RGPG_TEST_CERT") else {
-            eprintln!("RGPG_TEST_CERT unset; skipping");
+        let Some(path) = std::env::var_os("RPGP_TEST_CERT") else {
+            eprintln!("RPGP_TEST_CERT unset; skipping");
             return;
         };
 
@@ -433,14 +433,14 @@ mod tests {
     }
 
     /// Matching a certificate to the agent's copy of its secret, against a real
-    /// certificate when one is offered via `RGPG_TEST_CERT`.
+    /// certificate when one is offered via `RPGP_TEST_CERT`.
     ///
     /// Skipped by default: it needs a running agent that actually holds the
     /// key, which is a property of the developer's machine, not of the code.
     #[test]
     fn matches_a_certificate_to_the_agents_key() {
-        let Some(path) = std::env::var_os("RGPG_TEST_CERT") else {
-            eprintln!("RGPG_TEST_CERT unset; skipping");
+        let Some(path) = std::env::var_os("RPGP_TEST_CERT") else {
+            eprintln!("RPGP_TEST_CERT unset; skipping");
             return;
         };
         if !available() {

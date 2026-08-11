@@ -21,7 +21,7 @@
 ///
 /// Without an escape hatch the first crash report becomes unanswerable: no
 /// core, nothing for `coredumpctl`, and `gdb` refusing to attach.
-const ALLOW_DEBUG: &str = "RGPG_ALLOW_DEBUG";
+const ALLOW_DEBUG: &str = "RPGP_ALLOW_DEBUG";
 
 /// Refuse to dump core, and on Linux refuse to be attached to.
 ///
@@ -31,7 +31,7 @@ const ALLOW_DEBUG: &str = "RGPG_ALLOW_DEBUG";
 /// easier to inspect.
 pub fn harden() {
     if std::env::var_os(ALLOW_DEBUG).is_some() {
-        eprintln!("rgpg: {ALLOW_DEBUG} is set: core dumps and debugger attach are permitted");
+        eprintln!("rpgp: {ALLOW_DEBUG} is set: core dumps and debugger attach are permitted");
         return;
     }
 
@@ -47,12 +47,12 @@ pub fn harden() {
             maximum: Some(0),
         };
         if let Err(e) = rustix::process::setrlimit(rustix::process::Resource::Core, no_core) {
-            eprintln!("rgpg: could not disable core dumps: {e}");
+            eprintln!("rpgp: could not disable core dumps: {e}");
         }
     }
 
     // PR_SET_DUMPABLE also revokes same-user ptrace, so this covers both a
-    // core file and someone attaching gdb to a running rgpg. There is no
+    // core file and someone attaching gdb to a running rpgp. There is no
     // portable equivalent: macOS has PT_DENY_ATTACH, which is bypassable and
     // breaks crash reporting, so the macOS answer is the hardened runtime at
     // signing time instead.
@@ -60,7 +60,7 @@ pub fn harden() {
     {
         use rustix::process::{DumpableBehavior, set_dumpable_behavior};
         if let Err(e) = set_dumpable_behavior(DumpableBehavior::NotDumpable) {
-            eprintln!("rgpg: could not make the process non-dumpable: {e}");
+            eprintln!("rpgp: could not make the process non-dumpable: {e}");
         }
     }
 }

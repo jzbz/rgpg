@@ -1,6 +1,6 @@
 [package]
-name = "rgpg-core"
-description = "OpenPGP certificate store, key generation and message operations for rgpg"
+name = "rpgp-core"
+description = "OpenPGP certificate store, key generation and message operations for rpgp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

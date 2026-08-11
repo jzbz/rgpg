@@ -6,7 +6,7 @@
 //! depends on the key's role, so a key whose role had been erased with
 //! `role_into_unspecified` could not be decrypted at all — sequoia answers
 //! *cannot decrypt key with unspecified role*. RFC 4880 keys use CFB, never
-//! consult the role, and passed regardless. RFC 9580 being rgpg's default,
+//! consult the role, and passed regardless. RFC 9580 being rpgp's default,
 //! changing the expiry of, adding a user ID to, or revoking a
 //! passphrase-protected key failed for anyone who had not opted out of it.
 //!
@@ -16,8 +16,8 @@
 
 use std::time::Duration;
 
-use rgpg_core::keygen::{KeyGenRequest, Standard, generate};
-use rgpg_core::{CertSummary, Store, Validity, certify, lifecycle, ops, revoke};
+use rpgp_core::keygen::{KeyGenRequest, Standard, generate};
+use rpgp_core::{CertSummary, Store, Validity, certify, lifecycle, ops, revoke};
 use sequoia_openpgp::Cert;
 
 const PASSPHRASE: &str = "correct horse";

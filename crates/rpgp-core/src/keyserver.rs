@@ -45,11 +45,11 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// Verifying keyserver: it only serves addresses whose owner confirmed them.
 const DEFAULT_KEYSERVER: &str = "https://keys.openpgp.org";
 
-/// The keyserver to talk to. `RGPG_KEYSERVER` overrides it, for organisations
+/// The keyserver to talk to. `RPGP_KEYSERVER` overrides it, for organisations
 /// running their own and for testing against a local one rather than uploading
 /// to public infrastructure.
 fn keyserver() -> String {
-    std::env::var("RGPG_KEYSERVER")
+    std::env::var("RPGP_KEYSERVER")
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_KEYSERVER.to_string())
@@ -165,7 +165,7 @@ fn get(url: &str) -> Result<Vec<u8>> {
     runtime.block_on(async {
         let client = reqwest::Client::builder()
             .timeout(TIMEOUT)
-            .user_agent(concat!("rgpg/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("rpgp/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| Error::invalid(format!("cannot build an HTTP client: {e}")))?;
 
@@ -281,7 +281,7 @@ fn post(url: &str, body: serde_json::Value) -> Result<serde_json::Value> {
     runtime.block_on(async {
         let client = reqwest::Client::builder()
             .timeout(TIMEOUT)
-            .user_agent(concat!("rgpg/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("rpgp/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| Error::invalid(format!("cannot build an HTTP client: {e}")))?;
 
@@ -368,10 +368,10 @@ mod tests {
     #[test]
     /// Run it against any server that answers `POST /vks/v1/upload` with
     /// `{"key_fpr", "status", "token"}` and accepts `POST
-    /// /vks/v1/request-verify`, pointed at by `RGPG_KEYSERVER`. Asserting on
+    /// /vks/v1/request-verify`, pointed at by `RPGP_KEYSERVER`. Asserting on
     /// the request is the point: the upload must be an armored *public* key
     /// block containing no secret key material.
-    #[ignore = "needs a local stand-in for the VKS API at $RGPG_KEYSERVER"]
+    #[ignore = "needs a local stand-in for the VKS API at $RPGP_KEYSERVER"]
     fn publishes_to_a_local_keyserver() {
         let cert = crate::keygen::generate(&crate::keygen::KeyGenRequest::new(
             "Demo <demo@example.invalid>",

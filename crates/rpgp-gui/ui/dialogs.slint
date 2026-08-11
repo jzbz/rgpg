@@ -811,7 +811,7 @@ export component DeleteDialog inherits DialogShell {
     title: root.has-secret ? "Delete your key" : "Delete this certificate";
     subtitle: root.has-secret
         ? "Delete " + root.target-name + " and its secret key. Nothing signed with it can be "
-            + "made again, and nothing encrypted to it can be opened again. rgpg has the only "
+            + "made again, and nothing encrypted to it can be opened again. rpgp has the only "
             + "copy unless you exported one."
         : "Remove " + root.target-name + " from this store. Only your local copy goes; their "
             + "key is unaffected, and you can import it again later.";
@@ -1562,7 +1562,7 @@ export component AboutDialog inherits DialogShell {
     in property <string> version;
     callback open-link();
 
-    title: "rgpg";
+    title: "rpgp";
     subtitle: "An OpenPGP certificate manager. Version " + root.version + ".";
     card-width: 460px;
 
@@ -1585,7 +1585,7 @@ export component AboutDialog inherits DialogShell {
                     y: (parent.height - self.height) / 2;
                 }
                 Text {
-                    text: "rgpg.app";
+                    text: "rpgp.app";
                     color: link.has-hover ? Theme.accent-hover : Theme.accent;
                     font-size: Theme.t-lg;
                     font-weight: Theme.w-medium;

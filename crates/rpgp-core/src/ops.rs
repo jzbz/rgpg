@@ -218,7 +218,7 @@ pub fn verify_detached(store: &Store, signature: &[u8], data: &[u8]) -> Result<V
 /// Local key material is used when the certificate carries it. Otherwise the
 /// user's gpg-agent is asked, which is how a smartcard signs: the secret never
 /// leaves the card, and the PIN prompt is the agent's own pinentry rather than
-/// anything rgpg draws.
+/// anything rpgp draws.
 fn signing_keypair(
     cert: &Cert,
     password: Option<&str>,

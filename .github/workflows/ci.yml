@@ -94,13 +94,13 @@ jobs:
         run: cargo test --workspace --locked
 
   windows-core:
-    name: Windows (rgpg-core)
+    name: Windows (rpgp-core)
     runs-on: windows-latest
     # Blocking, unlike the informational job below, and the only place the
     # Windows ACL code is ever executed. Store writes real DACLs on secret keys
     # now, and the tests that read them back are all that stands between a typo
     # in an SDDL string and a key file every account on the machine can read.
-    # Narrowed to rgpg-core deliberately: it needs no system SQLite
+    # Narrowed to rpgp-core deliberately: it needs no system SQLite
     # (sequoia-cert-store forces rusqlite/bundled here) and no nettle (the
     # workspace selects crypto-rust), so it does not depend on the much larger
     # bet that the GUI stack builds on Windows.
@@ -122,15 +122,15 @@ jobs:
 
       # The lint job runs on Linux and so never sees the cfg(windows) module.
       - name: Clippy
-        run: cargo clippy -p rgpg-core --all-targets --locked -- -D warnings
+        run: cargo clippy -p rpgp-core --all-targets --locked -- -D warnings
 
       - name: Test
-        run: cargo test -p rgpg-core --locked
+        run: cargo test -p rpgp-core --locked
 
   windows-workspace:
     name: Windows workspace (informational)
     runs-on: windows-latest
-    # Still non-blocking and still only a check. rgpg is not supported on
+    # Still non-blocking and still only a check. rpgp is not supported on
     # Windows and linking a GUI binary for a platform we do not ship is not
     # worth the minutes. The file-permission half of the question moved to the
     # blocking job above.

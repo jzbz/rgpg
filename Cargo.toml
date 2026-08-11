@@ -1,19 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["crates/rgpg-core", "crates/rgpg-gui"]
+members = ["crates/rpgp-core", "crates/rpgp-gui"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/jzbz/rgpg"
+repository = "https://github.com/jzbz/rpgp"
 
 [workspace.dependencies]
-# Clears rgpg's own copies of a passphrase. Sequoia seals its Password type
+# Clears rpgp's own copies of a passphrase. Sequoia seals its Password type
 # already; this covers the String that exists before it becomes one.
 zeroize = "1"
-rgpg-core = { path = "crates/rgpg-core" }
+rpgp-core = { path = "crates/rpgp-core" }
 
 # Pure-Rust crypto backend. `crypto-rust` is not the default (nettle is), and it
 # refuses to build without the two `allow-*` opt-ins because RustCrypto is not
@@ -31,7 +31,7 @@ sequoia-cert-store = { version = "0.7", default-features = false }
 # Web-of-trust authentication. Depends on the same sequoia-openpgp 2.x and
 # cert-store 0.7 we already use, and forces no crypto backend of its own.
 sequoia-wot = "0.15"
-# Talks to the user's running gpg-agent. This is how rgpg reaches smartcard
+# Talks to the user's running gpg-agent. This is how rpgp reaches smartcard
 # keys: scdaemon owns the reader exclusively, so going through the agent is the
 # only way in on a machine that has GnuPG set up — and PIN entry stays with the
 # user's own pinentry, never with us.

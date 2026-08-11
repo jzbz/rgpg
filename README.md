@@ -1,6 +1,6 @@
-# rgpg
+# rpgp
 
-[![CI](https://github.com/jzbz/rgpg/actions/workflows/ci.yml/badge.svg)](https://github.com/jzbz/rgpg/actions/workflows/ci.yml)
+[![CI](https://github.com/jzbz/rpgp/actions/workflows/ci.yml/badge.svg)](https://github.com/jzbz/rpgp/actions/workflows/ci.yml)
 
 An OpenPGP certificate manager for Linux and macOS, in the spirit of KDE's
 Kleopatra: a window that lists your certificates and lets you generate, import,
@@ -19,13 +19,13 @@ by anyone but its author.
 
 | Crate | Contents |
 | --- | --- |
-| `crates/rgpg-core` | Certificate store, key generation, encrypt/decrypt/sign/verify, certification, web-of-trust, revocation and key lifecycle. No GUI types. |
-| `crates/rgpg-gui` | Slint front end. Binary is `rgpg`. |
+| `crates/rpgp-core` | Certificate store, key generation, encrypt/decrypt/sign/verify, certification, web-of-trust, revocation and key lifecycle. No GUI types. |
+| `crates/rpgp-gui` | Slint front end. Binary is `rpgp`. |
 
-The GUI depends only on `rgpg-core`'s own types — no `sequoia_openpgp` type
+The GUI depends only on `rpgp-core`'s own types — no `sequoia_openpgp` type
 reaches a Slint callback — so the OpenPGP layer stays replaceable.
 
-Inside `crates/rgpg-gui/ui`:
+Inside `crates/rpgp-gui/ui`:
 
 | File | Contents |
 | --- | --- |
@@ -57,7 +57,7 @@ so generating an RSA-4096 key does not freeze the window.
 Needs the Cap'n Proto compiler (`capnp`) installed.
 
 ```bash
-cargo run -p rgpg-gui
+cargo run -p rpgp-gui
 ```
 
 ```bash
@@ -71,7 +71,7 @@ To try the app with content in it, seed a throwaway store. It writes only
 inside the `XDG_DATA_HOME` you give it:
 
 ```bash
-XDG_DATA_HOME=/tmp/rgpg-demo cargo run -p rgpg-core --example seed-demo-store && XDG_DATA_HOME=/tmp/rgpg-demo cargo run -p rgpg-gui
+XDG_DATA_HOME=/tmp/rpgp-demo cargo run -p rpgp-core --example seed-demo-store && XDG_DATA_HOME=/tmp/rpgp-demo cargo run -p rpgp-gui
 ```
 
 ## Stack decisions
@@ -118,7 +118,7 @@ Building also needs the Cap'n Proto compiler (`capnp`), for `sequoia-ipc`.
 
 ## Certifying and trust
 
-Two different questions get asked about a certificate, and rgpg shows both
+Two different questions get asked about a certificate, and rpgp shows both
 because confusing them is how people end up trusting the wrong key:
 
 - **Validity** — is the certificate internally sound? Self-signatures check
@@ -154,7 +154,7 @@ for the sizes tested and will need revisiting for a keyring of thousands.
 
 A message can be encrypted to certificates, to passwords, or to both at once —
 the session key is wrapped separately for each, so any one of them opens it.
-Encrypting to a password alone is what `gpg -c` produces, and rgpg now reads
+Encrypting to a password alone is what `gpg -c` produces, and rpgp now reads
 that too: the decryption helper tries the supplied passphrase against the
 symmetric envelopes before concluding a message was not meant for us.
 
@@ -181,7 +181,7 @@ retracted, and the UI keeps them apart:
   than a certificate, so it falls through `CertParser` to `apply_revocation_file`.
 
 A **revocation certificate** is now written at key generation, to
-`$XDG_DATA_HOME/rgpg/revocations/<fingerprint>.rev`, and can be exported from
+`$XDG_DATA_HOME/rpgp/revocations/<fingerprint>.rev`, and can be exported from
 the details pane. It is the way back if the secret key or its passphrase is
 lost: applying it needs neither, because it was signed while the key was in
 hand. It cannot be recreated afterwards, which is why it is written once, at
@@ -201,7 +201,7 @@ reader. That is not a preference: `scdaemon` holds the card with an exclusive
 PC/SC transaction, so a second process asking the reader directly gets
 `SCARD_E_SHARING_VIOLATION`. It is why Kleopatra goes through gpg-agent too.
 
-Two things follow, both good. **rgpg never sees a PIN** — the agent runs the
+Two things follow, both good. **rpgp never sees a PIN** — the agent runs the
 user's own `pinentry`. And there is no PC/SC dependency.
 
 Signing, certifying and decrypting all work on a card. For the agent to raise
@@ -211,7 +211,7 @@ its own note above `set_pinentry_context` in `agent.rs`.
 ## Keyservers
 
 Lookup tries the Web Key Directory before a keyserver, and publishing uploads
-to `keys.openpgp.org`. `RGPG_KEYSERVER` overrides the server, for an internal
+to `keys.openpgp.org`. `RPGP_KEYSERVER` overrides the server, for an internal
 one or for testing against a local stand-in rather than uploading to public
 infrastructure.
 
@@ -226,13 +226,13 @@ Public certificates go in a [pgp-cert-d][certd] directory, the same layout `sq`
 uses, so they are shared with other Sequoia tooling rather than locked in this
 app:
 
-    $XDG_DATA_HOME/pgp.cert.d          (override with RGPG_CERT_STORE)
+    $XDG_DATA_HOME/pgp.cert.d          (override with RPGP_CERT_STORE)
 
 Secret keys do **not** go there — cert-d is a store of public certificates, and
 a transferable secret key in it would be readable by every tool that scans the
 directory. They live in their own directory, one binary TSK per file:
 
-    $XDG_DATA_HOME/rgpg/secrets/<fingerprint>.pgp
+    $XDG_DATA_HOME/rpgp/secrets/<fingerprint>.pgp
 
 Those files are `0600` in a `0700` directory, tightened every time the store is
 opened rather than only when a key is written, so a store created by an earlier
@@ -250,7 +250,7 @@ partial read of the process — the class of attack Spectre and coldboot fall
 into — yields nothing useful.
 
 That sealing does not survive a *complete* read of the address space, because
-the key it is sealed with lives in that same space. What rgpg does about that
+the key it is sealed with lives in that same space. What rpgp does about that
 differs by platform, and the gap is wide enough to spell out:
 
 **Linux.** The process is marked non-dumpable. That suppresses the core dump and
@@ -259,7 +259,7 @@ will not attach and a crash leaves nothing in `coredumpctl`.
 
 **macOS.** Only `RLIMIT_CORE` is set, and that has not been tested on macOS.
 There is no equivalent of the non-dumpable flag, so a debugger run by the same
-user can still attach to a running rgpg and read key material out of it. The
+user can still attach to a running rpgp and read key material out of it. The
 supported answer is codesigning the release with the hardened runtime and
 without the `get-task-allow` entitlement — not done yet. Until it is, assume the
 macOS build offers none of this paragraph.
@@ -268,7 +268,7 @@ Keeping passphrases off the accessibility bus is not platform-specific and
 applies to both. The bus publishes the contents of an ordinary text field
 verbatim and does not exempt password fields.
 
-Set `RGPG_ALLOW_DEBUG=1` to turn off the core-dump and debugger restrictions
+Set `RPGP_ALLOW_DEBUG=1` to turn off the core-dump and debugger restrictions
 when you need a backtrace.
 
 None of this is a privilege boundary. Key material passes through the GUI
@@ -279,12 +279,12 @@ buffer. Only the smartcard path avoids this entirely, by never seeing the key.
 
 ## Coming from GnuPG
 
-rgpg does not read `~/.gnupg`, and nothing it does will disturb it. Public certificates need no export at all: point Import at
+rpgp does not read `~/.gnupg`, and nothing it does will disturb it. Public certificates need no export at all: point Import at
 `~/.gnupg/pubring.kbx`. Secret keys still need exporting, since GnuPG keeps
 them in gpg-agent's own format:
 
 ```bash
-gpg --export --armor > /tmp/rgpg-public.asc && gpg --export-secret-keys --armor > /tmp/rgpg-secret.asc
+gpg --export --armor > /tmp/rpgp-public.asc && gpg --export-secret-keys --armor > /tmp/rpgp-secret.asc
 ```
 
 Import both with the Import button. Public certificates land in cert-d and
@@ -294,12 +294,12 @@ pass.
 Three caveats:
 
 - **This copies secret key material.** The keys then exist twice, under two
-  different protections: gpg-agent's, and rgpg's weaker on-disk one. Delete
-  `/tmp/rgpg-secret.asc` afterwards, and understand that rgpg's copy is only as
+  different protections: gpg-agent's, and rpgp's weaker on-disk one. Delete
+  `/tmp/rpgp-secret.asc` afterwards, and understand that rpgp's copy is only as
   safe as the passphrase on it.
 - **Smartcard keys cannot come across.** `--export-secret-keys` emits a stub for
   a key that lives on a YubiKey. Those need the gpg-agent route below.
-- **Ownertrust does not come across.** rgpg has no trust model yet, so
+- **Ownertrust does not come across.** rpgp has no trust model yet, so
   `--export-ownertrust` has nowhere to go.
 
 Reading `~/.gnupg` in place is possible but not built:
@@ -312,7 +312,7 @@ Reading `~/.gnupg` in place is possible but not built:
 - Secret keys under `private-keys-v1.d` are in gpg-agent's own S-expression
   format, not OpenPGP. The only sound way to use them is to ask gpg-agent, via
   `sequoia-keystore`'s gpg-agent backend — which would also solve smartcards and
-  would mean rgpg never holds key material at all.
+  would mean rpgp never holds key material at all.
 - A pre-2.1 `~/.gnupg/pubring.gpg` *is* a plain OpenPGP keyring and imports
   as-is today.
 
