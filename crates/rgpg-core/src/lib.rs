@@ -13,6 +13,7 @@ pub mod keyserver;
 pub mod lifecycle;
 pub mod ops;
 pub mod revoke;
+pub mod secret;
 pub mod store;
 pub mod wot;
 

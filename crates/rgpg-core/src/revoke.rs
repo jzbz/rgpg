@@ -286,11 +286,10 @@ fn primary_signer(
         .key()
         .clone()
         .parts_into_secret()
-        .map_err(|_| Error::NoSecretKey(cert.fingerprint().to_hex()))?
-        // `unlock` is shared with the certification path, which deals in
-        // subkeys; the primary key has to shed its role to match.
-        .role_into_unspecified();
-    unlock(key, password, cert)
+        .map_err(|_| Error::NoSecretKey(cert.fingerprint().to_hex()))?;
+    // Keeps its primary role: an RFC 9580 secret cannot be decrypted without
+    // it. See crate::secret::unlock.
+    crate::secret::keypair(key, password)
 }
 
 fn certification_signer(
@@ -310,27 +309,7 @@ fn certification_signer(
         .for_certification()
         .next()
         .ok_or_else(|| Error::NoSecretKey(cert.fingerprint().to_hex()))?;
-    unlock(ka.key().clone(), password, cert)
-}
-
-fn unlock(
-    key: sequoia_openpgp::packet::Key<
-        sequoia_openpgp::packet::key::SecretParts,
-        sequoia_openpgp::packet::key::UnspecifiedRole,
-    >,
-    password: Option<&str>,
-    cert: &Cert,
-) -> Result<sequoia_openpgp::crypto::KeyPair> {
-    let _ = cert;
-    let key = if key.secret().is_encrypted() {
-        let password = password
-            .filter(|p| !p.is_empty())
-            .ok_or_else(|| Error::invalid("this key is passphrase-protected"))?;
-        key.decrypt_secret(&password.into())?
-    } else {
-        key
-    };
-    Ok(key.into_keypair()?)
+    crate::secret::keypair(ka.key().clone(), password)
 }
 
 #[cfg(test)]

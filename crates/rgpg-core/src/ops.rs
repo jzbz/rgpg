@@ -235,17 +235,7 @@ fn signing_keypair(
         return Ok(Box::new(crate::agent::signer_for(cert)?));
     };
 
-    let key = ka.key().clone();
-    let key = if key.secret().is_encrypted() {
-        let password: Password = password
-            .filter(|p| !p.is_empty())
-            .ok_or_else(|| Error::invalid("this key is passphrase-protected"))?
-            .into();
-        key.decrypt_secret(&password)?
-    } else {
-        key
-    };
-    Ok(Box::new(key.into_keypair()?))
+    crate::secret::signer(ka.key().clone(), password)
 }
 
 /// Shared decryption/verification callbacks.
@@ -354,20 +344,13 @@ impl DecryptionHelper for Helper<'_> {
                         continue;
                     }
 
-                    let key = ka.key().clone();
-                    let key = if key.secret().is_encrypted() {
-                        let Some(password) = self.password.as_deref().filter(|p| !p.is_empty())
-                        else {
-                            continue;
-                        };
-                        match key.decrypt_secret(&Password::from(password.as_str())) {
-                            Ok(key) => key,
-                            Err(_) => continue,
-                        }
-                    } else {
-                        key
+                    // try_unlock, not unlock: this walks every key the message
+                    // might be addressed to, so one that will not open is a
+                    // reason to try the next rather than to fail the decrypt.
+                    let password = self.password.as_deref().map(String::as_str);
+                    let Some(key) = crate::secret::try_unlock(ka.key().clone(), password) else {
+                        continue;
                     };
-
                     let Ok(mut pair) = key.into_keypair() else {
                         continue;
                     };

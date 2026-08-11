@@ -126,20 +126,10 @@ pub fn certify(store: &Store, request: &CertifyRequest) -> Result<Cert> {
         .next();
 
     let mut signer: Box<dyn sequoia_openpgp::crypto::Signer + Send + Sync> = match local {
-        Some(ka) => {
-            let key = ka.key().clone();
-            let key = if key.secret().is_encrypted() {
-                let password = request
-                    .password
-                    .as_deref()
-                    .filter(|p| !p.is_empty())
-                    .ok_or_else(|| Error::invalid("this key is passphrase-protected"))?;
-                key.decrypt_secret(&password.as_str().into())?
-            } else {
-                key
-            };
-            Box::new(key.into_keypair()?)
-        }
+        Some(ka) => crate::secret::signer(
+            ka.key().clone(),
+            request.password.as_deref().map(String::as_str),
+        )?,
         None => Box::new(crate::agent::certifier_for(&certifier)?),
     };
 

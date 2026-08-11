@@ -185,18 +185,9 @@ fn unlock_primary(
         .key()
         .clone()
         .parts_into_secret()
-        .map_err(|_| Error::NoSecretKey(cert.fingerprint().to_hex()))?
-        .role_into_unspecified();
+        .map_err(|_| Error::NoSecretKey(cert.fingerprint().to_hex()))?;
 
-    let key = if key.secret().is_encrypted() {
-        let password = password
-            .filter(|p| !p.is_empty())
-            .ok_or_else(|| Error::invalid("this key is passphrase-protected"))?;
-        key.decrypt_secret(&password.into())?
-    } else {
-        key
-    };
-    Ok(Box::new(key.into_keypair()?))
+    crate::secret::signer(key, password)
 }
 
 #[cfg(test)]
