@@ -86,7 +86,14 @@ mod tests {
     fn primary(
         request: &KeyGenRequest,
     ) -> Key<SecretParts, sequoia_openpgp::packet::key::PrimaryRole> {
-        generate(request).unwrap().cert.primary_key().key().clone().parts_into_secret().unwrap()
+        generate(request)
+            .unwrap()
+            .cert
+            .primary_key()
+            .key()
+            .clone()
+            .parts_into_secret()
+            .unwrap()
     }
 
     #[test]
@@ -108,8 +115,14 @@ mod tests {
         // The three ways it can go wrong all have to fail, and `try_unlock`
         // has to report them as "skip this key" rather than propagating.
         for wrong in [None, Some(""), Some("hunter2")] {
-            assert!(unlock(key.clone(), wrong).is_err(), "{wrong:?} should not unlock");
-            assert!(try_unlock(key.clone(), wrong).is_none(), "{wrong:?} should be skipped");
+            assert!(
+                unlock(key.clone(), wrong).is_err(),
+                "{wrong:?} should not unlock"
+            );
+            assert!(
+                try_unlock(key.clone(), wrong).is_none(),
+                "{wrong:?} should be skipped"
+            );
         }
     }
 }

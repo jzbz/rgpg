@@ -57,13 +57,15 @@ impl Authentication {
 /// A failure to build the network is reported as "nothing is authenticated"
 /// rather than as an error: an unusable trust graph should grey out the
 /// trust column, not stop the list from being shown.
-pub fn authenticate_all(
-    certs: &[Cert],
-    roots: &[String],
-) -> HashMap<String, Authentication> {
+pub fn authenticate_all(certs: &[Cert], roots: &[String]) -> HashMap<String, Authentication> {
     let mut result: HashMap<String, Authentication> = certs
         .iter()
-        .map(|cert| (cert.fingerprint().to_hex().to_uppercase(), Authentication::Unknown))
+        .map(|cert| {
+            (
+                cert.fingerprint().to_hex().to_uppercase(),
+                Authentication::Unknown,
+            )
+        })
         .collect();
 
     let roots: Vec<Fingerprint> = roots.iter().filter_map(|r| r.parse().ok()).collect();
@@ -146,7 +148,9 @@ mod tests {
     #[test]
     fn a_stranger_is_unauthenticated_until_certified() {
         let (_dir, store) = scratch();
-        let me = generate(&KeyGenRequest::new("Me <me@example.org>")).unwrap().cert;
+        let me = generate(&KeyGenRequest::new("Me <me@example.org>"))
+            .unwrap()
+            .cert;
         let stranger = generate(&KeyGenRequest::new("Stranger <them@example.org>"))
             .unwrap()
             .cert;
@@ -178,7 +182,9 @@ mod tests {
     #[test]
     fn a_partial_certification_only_gets_partway() {
         let (_dir, store) = scratch();
-        let me = generate(&KeyGenRequest::new("Me <me@example.org>")).unwrap().cert;
+        let me = generate(&KeyGenRequest::new("Me <me@example.org>"))
+            .unwrap()
+            .cert;
         let acquaintance = generate(&KeyGenRequest::new("Pat <pat@example.org>"))
             .unwrap()
             .cert;
@@ -202,7 +208,9 @@ mod tests {
     #[test]
     fn a_trusted_introducer_extends_authentication_one_hop() {
         let (_dir, store) = scratch();
-        let me = generate(&KeyGenRequest::new("Me <me@example.org>")).unwrap().cert;
+        let me = generate(&KeyGenRequest::new("Me <me@example.org>"))
+            .unwrap()
+            .cert;
         let introducer = generate(&KeyGenRequest::new("Introducer <intro@example.org>"))
             .unwrap()
             .cert;
@@ -224,10 +232,8 @@ mod tests {
         onward.user_ids = vec!["Distant <far@example.org>".to_string()];
         certify(&store, &onward).unwrap();
 
-        let mut delegate = CertifyRequest::new(
-            me.fingerprint().to_hex(),
-            introducer.fingerprint().to_hex(),
-        );
+        let mut delegate =
+            CertifyRequest::new(me.fingerprint().to_hex(), introducer.fingerprint().to_hex());
         delegate.user_ids = vec!["Introducer <intro@example.org>".to_string()];
         delegate.depth = 1;
         delegate.amount = FULL;

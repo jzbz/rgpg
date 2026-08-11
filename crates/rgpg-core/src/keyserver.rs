@@ -67,10 +67,10 @@ pub fn lookup(query: &str) -> Result<Vec<Found>> {
 
     if query.contains('@')
         && let Ok(found) = lookup_wkd(query)
-            && !found.is_empty()
-        {
-            return Ok(found);
-        }
+        && !found.is_empty()
+    {
+        return Ok(found);
+    }
     lookup_keyserver(query)
 }
 
@@ -80,7 +80,9 @@ pub fn lookup_wkd(address: &str) -> Result<Vec<Found>> {
         .rsplit_once('@')
         .ok_or_else(|| Error::invalid(format!("{address} is not an e-mail address")))?;
     if local.is_empty() || domain.is_empty() {
-        return Err(Error::invalid(format!("{address} is not an e-mail address")));
+        return Err(Error::invalid(format!(
+            "{address} is not an e-mail address"
+        )));
     }
 
     let domain = domain.to_lowercase();
@@ -333,7 +335,9 @@ mod tests {
                 let summary = crate::CertSummary::from_cert(&found[0].cert);
                 eprintln!(
                     "WKD: {} {} via {}",
-                    summary.fingerprint, summary.primary_user_id, found[0].source.as_str()
+                    summary.fingerprint,
+                    summary.primary_user_id,
+                    found[0].source.as_str()
                 );
                 assert_eq!(found[0].source, Source::WebKeyDirectory);
             }
@@ -346,7 +350,10 @@ mod tests {
         match lookup_keyserver(fingerprint) {
             Ok(found) if !found.is_empty() => {
                 let summary = crate::CertSummary::from_cert(&found[0].cert);
-                eprintln!("keyserver: {} {}", summary.fingerprint, summary.primary_user_id);
+                eprintln!(
+                    "keyserver: {} {}",
+                    summary.fingerprint, summary.primary_user_id
+                );
                 assert_eq!(found[0].source, Source::Keyserver);
                 assert_eq!(summary.fingerprint, fingerprint);
             }
@@ -389,9 +396,10 @@ mod tests {
                 .any(|(a, state)| a == "demo@example.invalid" && state == "unpublished")
         );
 
-        request_verification(published.token.as_deref().unwrap(), &[
-            "demo@example.invalid".to_string()
-        ])
+        request_verification(
+            published.token.as_deref().unwrap(),
+            &["demo@example.invalid".to_string()],
+        )
         .expect("verification request should be accepted");
     }
 

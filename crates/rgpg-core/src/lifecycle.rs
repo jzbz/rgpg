@@ -78,24 +78,31 @@ pub fn add_user_id(
 
     let mut signer = unlock_primary(&cert, password)?;
     let userid = UserID::from(user_id);
-    let binding = SignatureBuilder::new(SignatureType::PositiveCertification)
-        .sign_userid_binding(&mut signer, cert.primary_key().key(), &userid)?;
+    let binding = SignatureBuilder::new(SignatureType::PositiveCertification).sign_userid_binding(
+        &mut signer,
+        cert.primary_key().key(),
+        &userid,
+    )?;
 
     let packets: Vec<Packet> = vec![Packet::from(userid), Packet::from(binding)];
     let updated = cert.clone().insert_packets(packets)?.0;
     store.insert(&updated)?;
     if store.has_secret(fingerprint) {
-        store.insert_secret(&cert.insert_packets(
-            updated
-                .userids()
-                .find(|ua| String::from_utf8_lossy(ua.userid().value()) == user_id)
-                .map(|ua| {
-                    let mut out: Vec<Packet> = vec![Packet::from(ua.userid().clone())];
-                    out.extend(ua.self_signatures().cloned().map(Packet::from));
-                    out
-                })
-                .unwrap_or_default(),
-        )?.0)?;
+        store.insert_secret(
+            &cert
+                .insert_packets(
+                    updated
+                        .userids()
+                        .find(|ua| String::from_utf8_lossy(ua.userid().value()) == user_id)
+                        .map(|ua| {
+                            let mut out: Vec<Packet> = vec![Packet::from(ua.userid().clone())];
+                            out.extend(ua.self_signatures().cloned().map(Packet::from));
+                            out
+                        })
+                        .unwrap_or_default(),
+                )?
+                .0,
+        )?;
     }
     Ok(updated)
 }
@@ -152,7 +159,9 @@ pub fn revoke_subkey(
         .subkeys()
         .map(|ka| ka.key().clone())
         .find(|key| key.fingerprint().to_hex().eq_ignore_ascii_case(&wanted))
-        .ok_or_else(|| Error::invalid(format!("{subkey_fingerprint} is not a subkey of this key")))?;
+        .ok_or_else(|| {
+            Error::invalid(format!("{subkey_fingerprint} is not a subkey of this key"))
+        })?;
 
     let mut signer = unlock_primary(&cert, password)?;
     let signature = SubkeyRevocationBuilder::new()
@@ -261,8 +270,12 @@ mod tests {
         let (_dir, store, cert) = scratch();
         let fingerprint = cert.fingerprint().to_hex();
 
-        let updated = add_user_id(&store, &fingerprint, "Alice <alice@work.example>", None).unwrap();
-        let ids: Vec<String> = cert::user_ids(&updated).iter().map(|u| u.text.clone()).collect();
+        let updated =
+            add_user_id(&store, &fingerprint, "Alice <alice@work.example>", None).unwrap();
+        let ids: Vec<String> = cert::user_ids(&updated)
+            .iter()
+            .map(|u| u.text.clone())
+            .collect();
         assert!(ids.iter().any(|u| u == "Alice <alice@work.example>"));
         assert!(ids.iter().any(|u| u == "Alice <alice@example.org>"));
 
@@ -280,16 +293,21 @@ mod tests {
         assert!(before.len() > 1, "the test key should have several subkeys");
         let victim = before[0].fingerprint.clone();
 
-        let updated =
-            revoke_subkey(&store, &fingerprint, &victim, "secret exposed", None).unwrap();
+        let updated = revoke_subkey(&store, &fingerprint, &victim, "secret exposed", None).unwrap();
 
         let after = cert::subkeys(&updated);
         assert!(
-            after.iter().find(|k| k.fingerprint == victim).is_some_and(|k| k.revoked),
+            after
+                .iter()
+                .find(|k| k.fingerprint == victim)
+                .is_some_and(|k| k.revoked),
             "the named subkey should be revoked"
         );
         assert!(
-            after.iter().filter(|k| k.fingerprint != victim).all(|k| !k.revoked),
+            after
+                .iter()
+                .filter(|k| k.fingerprint != victim)
+                .all(|k| !k.revoked),
             "no other subkey should be touched"
         );
         // The certificate itself is still usable.
@@ -304,12 +322,19 @@ mod tests {
         let fingerprint = cert.fingerprint().to_hex();
 
         // The last remaining identity cannot be revoked on its own.
-        assert!(revoke_user_id(&store, &fingerprint, "Alice <alice@example.org>", "", None).is_err());
+        assert!(
+            revoke_user_id(&store, &fingerprint, "Alice <alice@example.org>", "", None).is_err()
+        );
 
         add_user_id(&store, &fingerprint, "Alice <alice@work.example>", None).unwrap();
-        let updated =
-            revoke_user_id(&store, &fingerprint, "Alice <alice@work.example>", "left the job", None)
-                .unwrap();
+        let updated = revoke_user_id(
+            &store,
+            &fingerprint,
+            "Alice <alice@work.example>",
+            "left the job",
+            None,
+        )
+        .unwrap();
 
         let ids = cert::user_ids(&updated);
         let revoked = ids
@@ -317,6 +342,9 @@ mod tests {
             .find(|u| u.text == "Alice <alice@work.example>")
             .expect("a revoked user ID stays on the key");
         assert!(revoked.revoked);
-        assert!(ids.iter().any(|u| u.text == "Alice <alice@example.org>" && !u.revoked));
+        assert!(
+            ids.iter()
+                .any(|u| u.text == "Alice <alice@example.org>" && !u.revoked)
+        );
     }
 }

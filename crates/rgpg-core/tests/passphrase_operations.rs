@@ -73,8 +73,14 @@ fn add_and_revoke_a_user_id() {
 
         lifecycle::add_user_id(store, &fingerprint, SECOND, Some(PASSPHRASE))
             .map_err(|e| format!("add_user_id: {e}"))?;
-        lifecycle::revoke_user_id(store, &fingerprint, SECOND, "no longer mine", Some(PASSPHRASE))
-            .map_err(|e| format!("revoke_user_id: {e}"))?;
+        lifecycle::revoke_user_id(
+            store,
+            &fingerprint,
+            SECOND,
+            "no longer mine",
+            Some(PASSPHRASE),
+        )
+        .map_err(|e| format!("revoke_user_id: {e}"))?;
         Ok(())
     });
 }
@@ -114,7 +120,8 @@ fn revoke_the_certificate() {
             message: "no longer used".into(),
             password: Some(PASSPHRASE.to_string().into()),
         };
-        let revoked = revoke::revoke_cert(store, &request).map_err(|e| format!("revoke_cert: {e}"))?;
+        let revoked =
+            revoke::revoke_cert(store, &request).map_err(|e| format!("revoke_cert: {e}"))?;
         assert_eq!(CertSummary::from_cert(&revoked).validity, Validity::Revoked);
         Ok(())
     });
@@ -168,7 +175,10 @@ fn sign_detached_and_cleartext() {
             .map_err(|e| format!("sign_detached: {e}"))?;
         let result = ops::verify_detached(store, &detached, DATA)
             .map_err(|e| format!("verify_detached: {e}"))?;
-        assert!(!result.signatures.is_empty(), "detached signature did not verify");
+        assert!(
+            !result.signatures.is_empty(),
+            "detached signature did not verify"
+        );
 
         let mut cleartext = Vec::new();
         ops::sign_cleartext(&cert, Some(PASSPHRASE), DATA, &mut cleartext)
@@ -176,7 +186,10 @@ fn sign_detached_and_cleartext() {
         let (body, result) =
             ops::verify_inline(store, &cleartext).map_err(|e| format!("verify_inline: {e}"))?;
         assert_eq!(body, DATA);
-        assert!(!result.signatures.is_empty(), "cleartext signature did not verify");
+        assert!(
+            !result.signatures.is_empty(),
+            "cleartext signature did not verify"
+        );
         Ok(())
     });
 }
@@ -205,7 +218,10 @@ fn encrypt_signed_then_decrypt() {
         let result = ops::decrypt(store, &ciphertext, Some(PASSPHRASE), &mut recovered)
             .map_err(|e| format!("decrypt: {e}"))?;
         assert_eq!(recovered, PLAINTEXT);
-        assert!(!result.signatures.is_empty(), "the signature did not verify");
+        assert!(
+            !result.signatures.is_empty(),
+            "the signature did not verify"
+        );
         Ok(())
     });
 }

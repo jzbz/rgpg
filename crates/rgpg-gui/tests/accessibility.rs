@@ -32,7 +32,9 @@ fn a_secret_field_does_not_publish_its_contents() {
     let probe = FieldProbe::new().unwrap();
     probe.set_secret_text(PASSPHRASE.into());
 
-    let published = probe_inputs(&probe)[0].accessible_value().unwrap_or_default();
+    let published = probe_inputs(&probe)[0]
+        .accessible_value()
+        .unwrap_or_default();
     assert!(
         !published.contains(PASSPHRASE),
         "the passphrase is on the accessibility bus: accessible-value = {published:?}",

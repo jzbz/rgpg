@@ -215,10 +215,18 @@ pub struct SubkeySummary {
 impl SubkeySummary {
     pub fn capabilities(&self) -> String {
         let mut out = String::new();
-        if self.can_certify { out.push('C'); }
-        if self.can_sign { out.push('S'); }
-        if self.can_encrypt { out.push('E'); }
-        if out.is_empty() { out.push('-'); }
+        if self.can_certify {
+            out.push('C');
+        }
+        if self.can_sign {
+            out.push('S');
+        }
+        if self.can_encrypt {
+            out.push('E');
+        }
+        if out.is_empty() {
+            out.push('-');
+        }
         out
     }
 }

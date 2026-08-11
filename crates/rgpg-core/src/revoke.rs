@@ -188,10 +188,8 @@ pub fn revoke_certification(
 /// what GnuPG writes for a revocation certificate and what other tools expect
 /// to be handed. The payload is still a bare signature packet.
 pub fn armor(signature: &Signature) -> Result<Vec<u8>> {
-    let mut writer = sequoia_openpgp::armor::Writer::new(
-        Vec::new(),
-        sequoia_openpgp::armor::Kind::PublicKey,
-    )?;
+    let mut writer =
+        sequoia_openpgp::armor::Writer::new(Vec::new(), sequoia_openpgp::armor::Kind::PublicKey)?;
     Packet::from(signature.clone()).serialize(&mut writer)?;
     Ok(writer.finalize()?)
 }
@@ -277,10 +275,7 @@ pub fn revocation_reason(cert: &Cert) -> Option<(Reason, String)> {
     ))
 }
 
-fn primary_signer(
-    cert: &Cert,
-    password: Option<&str>,
-) -> Result<sequoia_openpgp::crypto::KeyPair> {
+fn primary_signer(cert: &Cert, password: Option<&str>) -> Result<sequoia_openpgp::crypto::KeyPair> {
     let key = cert
         .primary_key()
         .key()
@@ -329,7 +324,9 @@ mod tests {
     #[test]
     fn revokes_our_own_certificate_with_a_reason() {
         let (_dir, store) = scratch();
-        let mine = generate(&KeyGenRequest::new("Me <me@example.org>")).unwrap().cert;
+        let mine = generate(&KeyGenRequest::new("Me <me@example.org>"))
+            .unwrap()
+            .cert;
         store.insert_secret(&mine).unwrap();
         let fingerprint = mine.fingerprint().to_hex();
 
@@ -382,14 +379,17 @@ mod tests {
     #[test]
     fn revoking_a_certification_withdraws_authentication() {
         let (_dir, store) = scratch();
-        let me = generate(&KeyGenRequest::new("Me <me@example.org>")).unwrap().cert;
+        let me = generate(&KeyGenRequest::new("Me <me@example.org>"))
+            .unwrap()
+            .cert;
         let them = generate(&KeyGenRequest::new("Them <them@example.org>"))
             .unwrap()
             .cert;
         store.insert_secret(&me).unwrap();
         store.insert(&them).unwrap();
 
-        let mut request = CertifyRequest::new(me.fingerprint().to_hex(), them.fingerprint().to_hex());
+        let mut request =
+            CertifyRequest::new(me.fingerprint().to_hex(), them.fingerprint().to_hex());
         request.user_ids = vec!["Them <them@example.org>".to_string()];
         certify(&store, &request).unwrap();
 
@@ -430,7 +430,9 @@ mod tests {
     #[test]
     fn refuses_a_revocation_for_someone_else() {
         let (dir, store) = scratch();
-        let mine = generate(&KeyGenRequest::new("Me <me@example.org>")).unwrap().cert;
+        let mine = generate(&KeyGenRequest::new("Me <me@example.org>"))
+            .unwrap()
+            .cert;
         let other = generate(&KeyGenRequest::new("Other <other@example.org>"))
             .unwrap()
             .cert;

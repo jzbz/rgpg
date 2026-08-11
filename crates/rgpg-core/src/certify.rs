@@ -267,7 +267,8 @@ mod tests {
 
         assert!(certifications(&store, &bob).unwrap().is_empty());
 
-        let mut request = CertifyRequest::new(alice.fingerprint().to_hex(), bob.fingerprint().to_hex());
+        let mut request =
+            CertifyRequest::new(alice.fingerprint().to_hex(), bob.fingerprint().to_hex());
         request.user_ids = vec!["Bob <bob@example.org>".to_string()];
         certify(&store, &request).unwrap();
 
@@ -296,7 +297,8 @@ mod tests {
         store.insert_secret(&alice).unwrap();
         store.insert(&bob).unwrap();
 
-        let mut request = CertifyRequest::new(alice.fingerprint().to_hex(), bob.fingerprint().to_hex());
+        let mut request =
+            CertifyRequest::new(alice.fingerprint().to_hex(), bob.fingerprint().to_hex());
         request.user_ids = vec!["Bob <bob@example.org>".to_string()];
         request.amount = PARTIAL;
         request.depth = 1;

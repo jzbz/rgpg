@@ -124,7 +124,8 @@ pub fn decrypt(
     let policy = policy();
     let helper = Helper::new(store, password);
 
-    let mut decryptor = DecryptorBuilder::from_bytes(ciphertext)?.with_policy(&policy, None, helper)?;
+    let mut decryptor =
+        DecryptorBuilder::from_bytes(ciphertext)?.with_policy(&policy, None, helper)?;
     std::io::copy(&mut decryptor, &mut sink).map_err(|e| Error::io("decrypting message", e))?;
 
     let helper = decryptor.into_helper();
@@ -595,8 +596,14 @@ mod tests {
         store.insert_secret(&bob).unwrap();
 
         let mut ciphertext = Vec::new();
-        encrypt(std::slice::from_ref(&bob), &[], Some((&alice, None)), b"attack at dawn", &mut ciphertext)
-            .unwrap();
+        encrypt(
+            std::slice::from_ref(&bob),
+            &[],
+            Some((&alice, None)),
+            b"attack at dawn",
+            &mut ciphertext,
+        )
+        .unwrap();
         assert!(ciphertext.starts_with(b"-----BEGIN PGP MESSAGE-----"));
 
         let mut plaintext = Vec::new();
@@ -617,7 +624,14 @@ mod tests {
         store.insert_secret(&alice).unwrap();
 
         let mut message = Vec::new();
-        encrypt(std::slice::from_ref(&alice), &[], None, b"hello", &mut message).unwrap();
+        encrypt(
+            std::slice::from_ref(&alice),
+            &[],
+            None,
+            b"hello",
+            &mut message,
+        )
+        .unwrap();
         assert_eq!(classify(&message), InputKind::Message);
 
         let mut signature = Vec::new();
@@ -636,12 +650,27 @@ mod tests {
 
     #[test]
     fn derives_output_names() {
-        assert_eq!(encrypted_name(Path::new("notes.txt")), Path::new("notes.txt.asc"));
-        assert_eq!(signature_name(Path::new("notes.txt")), Path::new("notes.txt.sig"));
-        assert_eq!(decrypted_name(Path::new("notes.txt.asc")), Path::new("notes.txt"));
-        assert_eq!(decrypted_name(Path::new("notes.txt.gpg")), Path::new("notes.txt"));
+        assert_eq!(
+            encrypted_name(Path::new("notes.txt")),
+            Path::new("notes.txt.asc")
+        );
+        assert_eq!(
+            signature_name(Path::new("notes.txt")),
+            Path::new("notes.txt.sig")
+        );
+        assert_eq!(
+            decrypted_name(Path::new("notes.txt.asc")),
+            Path::new("notes.txt")
+        );
+        assert_eq!(
+            decrypted_name(Path::new("notes.txt.gpg")),
+            Path::new("notes.txt")
+        );
         // Nothing to strip: do not overwrite the input.
-        assert_eq!(decrypted_name(Path::new("notes.txt")), Path::new("notes.txt.out"));
+        assert_eq!(
+            decrypted_name(Path::new("notes.txt")),
+            Path::new("notes.txt.out")
+        );
     }
 
     #[test]
@@ -656,7 +685,14 @@ mod tests {
         std::fs::write(&input, b"the coordinates are in the second envelope").unwrap();
 
         let encrypted = encrypted_name(&input);
-        encrypt_file(std::slice::from_ref(&alice), &[], Some((&alice, None)), &input, &encrypted).unwrap();
+        encrypt_file(
+            std::slice::from_ref(&alice),
+            &[],
+            Some((&alice, None)),
+            &input,
+            &encrypted,
+        )
+        .unwrap();
 
         let decrypted = dir.path().join("out.txt");
         let result = decrypt_file(&store, &encrypted, None, &decrypted).unwrap();
@@ -686,16 +722,25 @@ mod tests {
         store.insert(&stranger).unwrap();
 
         let encrypted = dir.path().join("secret.asc");
-        encrypt_file(&[stranger], &[], None, &{
-            let p = dir.path().join("in.txt");
-            std::fs::write(&p, b"x").unwrap();
-            p
-        }, &encrypted)
+        encrypt_file(
+            &[stranger],
+            &[],
+            None,
+            &{
+                let p = dir.path().join("in.txt");
+                std::fs::write(&p, b"x").unwrap();
+                p
+            },
+            &encrypted,
+        )
         .unwrap();
 
         let output = dir.path().join("out.txt");
         assert!(decrypt_file(&store, &encrypted, None, &output).is_err());
-        assert!(!output.exists(), "a failed decryption must not create the output file");
+        assert!(
+            !output.exists(),
+            "a failed decryption must not create the output file"
+        );
     }
 
     #[test]
@@ -739,7 +784,14 @@ mod tests {
         let (_dir, store) = scratch_store();
 
         let mut ciphertext = Vec::new();
-        encrypt(&[], &["hunter2".to_string()], None, b"no keys involved", &mut ciphertext).unwrap();
+        encrypt(
+            &[],
+            &["hunter2".to_string()],
+            None,
+            b"no keys involved",
+            &mut ciphertext,
+        )
+        .unwrap();
 
         let mut plaintext = Vec::new();
         decrypt(&store, &ciphertext, Some("hunter2"), &mut plaintext).unwrap();

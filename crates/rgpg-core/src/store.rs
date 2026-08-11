@@ -64,7 +64,9 @@ impl Store {
     pub fn open_default() -> Result<Self> {
         let cert_dir = match std::env::var_os("RGPG_CERT_STORE") {
             Some(dir) => PathBuf::from(dir),
-            None => dirs::data_dir().ok_or(Error::NoStoreDir)?.join("pgp.cert.d"),
+            None => dirs::data_dir()
+                .ok_or(Error::NoStoreDir)?
+                .join("pgp.cert.d"),
         };
         let secrets_dir = dirs::data_dir()
             .ok_or(Error::NoStoreDir)?
@@ -115,9 +117,8 @@ impl Store {
 
     /// Keep a revocation certificate. Written once, at key generation.
     pub fn save_revocation(&self, fingerprint: &str, armored: &[u8]) -> Result<()> {
-        fs::create_dir_all(&self.revocations_dir).map_err(|e| {
-            Error::io(format!("creating {}", self.revocations_dir.display()), e)
-        })?;
+        fs::create_dir_all(&self.revocations_dir)
+            .map_err(|e| Error::io(format!("creating {}", self.revocations_dir.display()), e))?;
         restrict(&self.revocations_dir, 0o700)?;
 
         // Anyone holding this file can retire the key it belongs to.
@@ -203,8 +204,9 @@ impl Store {
     /// Secret key material is stripped first: `update` writes to cert-d, which
     /// is world-readable by design.
     pub fn insert(&self, cert: &Cert) -> Result<()> {
-        self.certs
-            .update(Arc::new(LazyCert::from(cert.clone().strip_secret_key_material())))?;
+        self.certs.update(Arc::new(LazyCert::from(
+            cert.clone().strip_secret_key_material(),
+        )))?;
         Ok(())
     }
 

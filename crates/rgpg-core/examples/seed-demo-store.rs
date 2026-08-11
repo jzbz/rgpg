@@ -19,25 +19,84 @@ use rgpg_core::keygen::{KeyGenRequest, KeyType, generate};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = Store::open_default()?;
 
-    let ada = make(&store, "Ada Lovelace <ada@analytical.engine>", KeyType::Curve25519, true)?;
-    let _grace = make(&store, "Grace Hopper <grace@navy.mil>", KeyType::Rsa3072, true)?;
-    let alan = make(&store, "Alan Turing <alan@bletchley.uk>", KeyType::Curve25519, false)?;
-    let katherine = make(&store, "Katherine Johnson <katherine@nasa.gov>", KeyType::Curve25519, false)?;
-    let radia = make(&store, "Radia Perlman <radia@spanning.tree>", KeyType::Rsa3072, false)?;
-    let _linus = make(&store, "Linus Torvalds <linus@kernel.org>", KeyType::Curve25519, false)?;
+    let ada = make(
+        &store,
+        "Ada Lovelace <ada@analytical.engine>",
+        KeyType::Curve25519,
+        true,
+    )?;
+    let _grace = make(
+        &store,
+        "Grace Hopper <grace@navy.mil>",
+        KeyType::Rsa3072,
+        true,
+    )?;
+    let alan = make(
+        &store,
+        "Alan Turing <alan@bletchley.uk>",
+        KeyType::Curve25519,
+        false,
+    )?;
+    let katherine = make(
+        &store,
+        "Katherine Johnson <katherine@nasa.gov>",
+        KeyType::Curve25519,
+        false,
+    )?;
+    let radia = make(
+        &store,
+        "Radia Perlman <radia@spanning.tree>",
+        KeyType::Rsa3072,
+        false,
+    )?;
+    let _linus = make(
+        &store,
+        "Linus Torvalds <linus@kernel.org>",
+        KeyType::Curve25519,
+        false,
+    )?;
 
     // Barbara needs her secret key briefly so she can certify Katherine, then
     // gives it up: she should appear as somebody else's key, not one of ours.
-    let barbara = make(&store, "Barbara Liskov <barbara@substitution.org>", KeyType::Curve25519, true)?;
+    let barbara = make(
+        &store,
+        "Barbara Liskov <barbara@substitution.org>",
+        KeyType::Curve25519,
+        true,
+    )?;
 
-    certification(&store, &ada, &alan, "Alan Turing <alan@bletchley.uk>", |_| {})?;
-    certification(&store, &ada, &radia, "Radia Perlman <radia@spanning.tree>", |r| {
-        r.amount = PARTIAL;
-    })?;
-    certification(&store, &ada, &barbara, "Barbara Liskov <barbara@substitution.org>", |r| {
-        r.depth = 1;
-    })?;
-    certification(&store, &barbara, &katherine, "Katherine Johnson <katherine@nasa.gov>", |_| {})?;
+    certification(
+        &store,
+        &ada,
+        &alan,
+        "Alan Turing <alan@bletchley.uk>",
+        |_| {},
+    )?;
+    certification(
+        &store,
+        &ada,
+        &radia,
+        "Radia Perlman <radia@spanning.tree>",
+        |r| {
+            r.amount = PARTIAL;
+        },
+    )?;
+    certification(
+        &store,
+        &ada,
+        &barbara,
+        "Barbara Liskov <barbara@substitution.org>",
+        |r| {
+            r.depth = 1;
+        },
+    )?;
+    certification(
+        &store,
+        &barbara,
+        &katherine,
+        "Katherine Johnson <katherine@nasa.gov>",
+        |_| {},
+    )?;
 
     let secrets = dirs::data_dir()
         .ok_or("no data directory")?

@@ -42,7 +42,10 @@ pub fn harden() {
         // `kernel.core_pattern` pipes to systemd-coredump and a pipe target
         // ignores RLIMIT_CORE; PR_SET_DUMPABLE below is what actually stops
         // it there.
-        let no_core = rustix::process::Rlimit { current: Some(0), maximum: Some(0) };
+        let no_core = rustix::process::Rlimit {
+            current: Some(0),
+            maximum: Some(0),
+        };
         if let Err(e) = rustix::process::setrlimit(rustix::process::Resource::Core, no_core) {
             eprintln!("rgpg: could not disable core dumps: {e}");
         }

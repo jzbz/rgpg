@@ -51,11 +51,15 @@ impl Sort {
         let by_name = |c: &CertSummary| c.primary_user_id.to_lowercase();
         match self {
             Sort::MineFirst => certs.sort_by(|a, b| {
-                b.has_secret.cmp(&a.has_secret).then_with(|| by_name(a).cmp(&by_name(b)))
+                b.has_secret
+                    .cmp(&a.has_secret)
+                    .then_with(|| by_name(a).cmp(&by_name(b)))
             }),
             Sort::Name => certs.sort_by_key(by_name),
             Sort::Newest => certs.sort_by(|a, b| {
-                b.created.cmp(&a.created).then_with(|| by_name(a).cmp(&by_name(b)))
+                b.created
+                    .cmp(&a.created)
+                    .then_with(|| by_name(a).cmp(&by_name(b)))
             }),
             // Certificates that never expire sort last rather than first: an
             // absent date is the opposite of urgent.
@@ -475,7 +479,10 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
             let _ = slint::spawn_local(async move {
                 let Some(file) = rfd::AsyncFileDialog::new()
                     .set_title("Import certificates")
-                    .add_filter("OpenPGP", &["asc", "pgp", "gpg", "key", "pub", "sec", "kbx"])
+                    .add_filter(
+                        "OpenPGP",
+                        &["asc", "pgp", "gpg", "key", "pub", "sec", "kbx"],
+                    )
                     .add_filter("All files", &["*"])
                     .pick_file()
                     .await
@@ -739,7 +746,14 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
                 return;
             };
             ui.set_busy(true);
-            ui.set_status(if encrypt { "Encrypting…" } else { "Signing…" }.into());
+            ui.set_status(
+                if encrypt {
+                    "Encrypting…"
+                } else {
+                    "Signing…"
+                }
+                .into(),
+            );
 
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
             let (password, secret) = (password.to_string(), secret.to_string());
@@ -1014,7 +1028,10 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
 
 /// The blocking half of Decrypt / Verify. Returns a summary line, a tone for
 /// the result banner (1 good, 2 needs attention, 3 bad) and the signatures.
-fn run_decrypt_verify(state: &Shared, password: &str) -> Result<(String, i32, VerifyResult), String> {
+fn run_decrypt_verify(
+    state: &Shared,
+    password: &str,
+) -> Result<(String, i32, VerifyResult), String> {
     // Snapshot what is needed and release the lock: everything below is I/O,
     // and a card PIN prompt can hold it for a minute while the UI waits.
     let (store, input, kind, data) = {
@@ -1179,9 +1196,7 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
                         Ok(count) => {
                             ui.set_certify_open(false);
                             reload(&ui, &state);
-                            ui.set_status(
-                                format!("Certified {count} user ID(s)").into(),
-                            );
+                            ui.set_status(format!("Certified {count} user ID(s)").into());
                         }
                         Err(message) => ui.set_status(message.into()),
                     }
@@ -1302,12 +1317,8 @@ fn push_certifications(ui: &AppWindow, state: &State, summary: &CertSummary) {
     };
 
     // Offer to withdraw only what is actually still standing.
-    let withdrawable = certifications
-        .iter()
-        .any(|c| c.by_me && !c.is_revocation)
-        && !certifications
-            .iter()
-            .any(|c| c.by_me && c.is_revocation);
+    let withdrawable = certifications.iter().any(|c| c.by_me && !c.is_revocation)
+        && !certifications.iter().any(|c| c.by_me && c.is_revocation);
 
     let rows: Vec<CertificationRow> = certifications
         .iter()
@@ -1485,9 +1496,10 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
                     .ok()
                     .and_then(|i| guard.lookup_results.get(i))
                 {
-                    Some(found) => guard.store.insert(&found.cert).map(|()| {
-                        rgpg_core::CertSummary::from_cert(&found.cert).primary_user_id
-                    }),
+                    Some(found) => guard
+                        .store
+                        .insert(&found.cert)
+                        .map(|()| rgpg_core::CertSummary::from_cert(&found.cert).primary_user_id),
                     None => return,
                 }
             };
@@ -1766,14 +1778,11 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
                     ui.set_status("Copied to the clipboard".into());
                     // Let the button say so, then go back to offering the action.
                     let ui_weak = ui.as_weak();
-                    slint::Timer::single_shot(
-                        std::time::Duration::from_millis(1500),
-                        move || {
-                            if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_np_copied(false);
-                            }
-                        },
-                    );
+                    slint::Timer::single_shot(std::time::Duration::from_millis(1500), move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_np_copied(false);
+                        }
+                    });
                 }
                 Err(e) => ui.set_status(format!("Could not copy: {e}").into()),
             }
@@ -1793,8 +1802,7 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
             let (text, password, secret) =
                 (text.to_string(), password.to_string(), secret.to_string());
             std::thread::spawn(move || {
-                let outcome =
-                    run_notepad(&state, action, &text, signer_index, &password, &secret);
+                let outcome = run_notepad(&state, action, &text, signer_index, &password, &secret);
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = ui_weak.upgrade() else {
                         return;
@@ -1915,7 +1923,11 @@ fn run_notepad(
                 &mut output,
             )
             .map_err(|e| format!("Encryption failed: {e}"))?;
-            let what = if action == 2 { "Signed and encrypted" } else { "Encrypted" };
+            let what = if action == 2 {
+                "Signed and encrypted"
+            } else {
+                "Encrypted"
+            };
             Ok((string_of(output), what.to_string(), 1, Vec::new()))
         }
         // Decrypt, or verify if what was pasted is a bare signature.
@@ -1975,8 +1987,16 @@ fn load_signing_targets(ui: &AppWindow, state: &Shared) {
                 selected: false,
                 initials: initials(&name, &email, &c.key_id),
                 tint: tint_index(&c.fingerprint),
-                label: if name.is_empty() { c.primary_user_id.clone() } else { name },
-                sublabel: if email.is_empty() { c.key_id.clone() } else { email },
+                label: if name.is_empty() {
+                    c.primary_user_id.clone()
+                } else {
+                    name
+                },
+                sublabel: if email.is_empty() {
+                    c.key_id.clone()
+                } else {
+                    email
+                },
                 fingerprint: c.fingerprint.clone(),
             }
         })
@@ -2158,13 +2178,7 @@ fn run_revoke(
         let user_ids: Vec<String> = mine.iter().map(|c| c.user_id.clone()).collect();
 
         revoke::revoke_certification(
-            &store,
-            &certifier,
-            &target,
-            &user_ids,
-            reason,
-            message,
-            password,
+            &store, &certifier, &target, &user_ids, reason, message, password,
         )
         .map_err(|e| format!("Could not withdraw the certification: {e}"))?;
 
@@ -2254,10 +2268,7 @@ fn apply_filter(ui: &AppWindow, state: &Shared) {
     let total = guard.all.len();
     let mine = guard.all.iter().filter(|c| c.has_secret).count();
     let shown = rows.len();
-    let can_certify = guard
-        .all
-        .iter()
-        .any(|c| c.has_secret && c.can_certify);
+    let can_certify = guard.all.iter().any(|c| c.has_secret && c.can_certify);
     drop(guard);
 
     ui.set_certs(ModelRc::new(VecModel::from(rows)));

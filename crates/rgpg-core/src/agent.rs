@@ -72,9 +72,7 @@ fn runtime() -> Result<&'static Runtime> {
 /// failure look like it belongs to an unrelated call.
 async fn set_pinentry_context(agent: &mut Agent) {
     let usable = |value: Option<String>| {
-        value.filter(|v| {
-            !v.is_empty() && !v.chars().any(|c| c.is_whitespace() || c.is_control())
-        })
+        value.filter(|v| !v.is_empty() && !v.chars().any(|c| c.is_whitespace() || c.is_control()))
     };
 
     for (option, value) in [
@@ -137,9 +135,7 @@ pub fn card_keys() -> Result<Vec<AgentKey>> {
 /// The agent finds the secret half by keygrip, so only the public key is
 /// needed here. Any PIN or passphrase prompt happens in the user's pinentry
 /// while this call blocks.
-pub fn signer(
-    key: &Key<PublicParts, UnspecifiedRole>,
-) -> Result<sequoia_gpg_agent::KeyPair> {
+pub fn signer(key: &Key<PublicParts, UnspecifiedRole>) -> Result<sequoia_gpg_agent::KeyPair> {
     let agent = connect()?;
     // Only connecting is async. The returned KeyPair implements Sequoia's
     // Signer and Decryptor synchronously, so it drops straight into the
@@ -362,7 +358,9 @@ mod tests {
             let policy = crate::policy();
             let valid = card.with_policy(&policy, None).unwrap();
             for ka in valid.keys().alive().revoked(false) {
-                let grip = Keygrip::of(ka.key().mpis()).map(|g| g.to_string()).unwrap_or_default();
+                let grip = Keygrip::of(ka.key().mpis())
+                    .map(|g| g.to_string())
+                    .unwrap_or_default();
                 let m = held.iter().find(|k| k.keygrip.eq_ignore_ascii_case(&grip));
                 eprintln!(
                     "  subkey {} sign={} enc={} agent={:?}",
@@ -395,8 +393,14 @@ mod tests {
         // Encrypt to the card, then decrypt with it. No local secret exists
         // for this certificate, so success can only come from the agent.
         let mut ciphertext = Vec::new();
-        crate::ops::encrypt(std::slice::from_ref(&card), &[], None, b"for the card only", &mut ciphertext)
-            .unwrap();
+        crate::ops::encrypt(
+            std::slice::from_ref(&card),
+            &[],
+            None,
+            b"for the card only",
+            &mut ciphertext,
+        )
+        .unwrap();
 
         // Surface whichever of the two steps is actually failing.
         {
@@ -426,7 +430,6 @@ mod tests {
         assert_eq!(plaintext, b"for the card only");
         assert_eq!(result.decrypted_with, Some(card.fingerprint().to_hex()));
         eprintln!("decrypted on the card");
-
     }
 
     /// Matching a certificate to the agent's copy of its secret, against a real
