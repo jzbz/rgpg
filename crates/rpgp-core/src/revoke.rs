@@ -241,13 +241,27 @@ pub fn apply_revocation_file(store: &Store, path: &Path) -> Result<Cert> {
     }
 
     // A revocation names its target through the issuer subpackets.
+    // Every issuer of every signature, not the first one that resolves. A
+    // revocation names its target through the issuer subpackets, and a
+    // designated-revoker certificate names the revoker as well — so the first
+    // resolvable handle is often the wrong certificate to apply it to, and
+    // returning on it meant the emergency path failed for exactly the
+    // certificates it exists to retract. `apply` re-checks cryptographically,
+    // so trying several costs nothing but a few merges that come to nothing.
+    let mut last = None;
     for signature in &signatures {
         for handle in signature.get_issuers() {
             let Ok(cert) = store.lookup(&handle.to_string()) else {
                 continue;
             };
-            return apply(store, cert, signature.clone());
+            match apply(store, cert, signature.clone()) {
+                Ok(revoked) => return Ok(revoked),
+                Err(e) => last = Some(e),
+            }
         }
+    }
+    if let Some(e) = last {
+        return Err(e);
     }
 
     Err(Error::invalid(

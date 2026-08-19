@@ -1,7 +1,7 @@
 //! Message operations: encrypt, decrypt, sign, verify.
 
 use std::fs;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use sequoia_openpgp::crypto::{Password, SessionKey};
@@ -112,6 +112,59 @@ pub fn encrypt(
     message.write_all(plaintext)?;
     message.finalize()?;
     Ok(())
+}
+
+/// The most plaintext [`decrypt_to_memory`] will hand back.
+///
+/// Generous for anything a person pastes into a text box, and far below what a
+/// compressed layer can expand to.
+pub const MAX_IN_MEMORY_PLAINTEXT: usize = 64 * 1024 * 1024;
+
+/// A sink that refuses to grow past `limit`.
+///
+/// Decompression is the reason this exists: the size of the output is chosen
+/// by whoever wrote the message, not by whoever reads it.
+struct Bounded<W> {
+    inner: W,
+    written: usize,
+    limit: usize,
+}
+
+impl<W: Write> Write for Bounded<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.written = self.written.saturating_add(buf.len());
+        if self.written > self.limit {
+            return Err(std::io::Error::other(
+                "the message expands to more than this window can hold; \
+                 decrypt it to a file instead",
+            ));
+        }
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// [`decrypt`] into memory, refusing a plaintext larger than
+/// [`MAX_IN_MEMORY_PLAINTEXT`].
+///
+/// For callers that genuinely need the plaintext in RAM — the notepad, whose
+/// output is a text box. A file destination should use [`decrypt_file`], which
+/// streams and has no such ceiling.
+pub fn decrypt_to_memory(
+    store: &Store,
+    ciphertext: &[u8],
+    passwords: &[&str],
+    plaintext: &mut Vec<u8>,
+) -> Result<VerifyResult> {
+    let mut sink = Bounded {
+        inner: plaintext,
+        written: 0,
+        limit: MAX_IN_MEMORY_PLAINTEXT,
+    };
+    decrypt(store, ciphertext, passwords, &mut sink)
 }
 
 /// Decrypt a message, verifying any signatures against the store.
@@ -627,11 +680,36 @@ pub fn decrypt_file(
     output: &Path,
 ) -> Result<VerifyResult> {
     let ciphertext = read(input)?;
-    // The output file is created only once the message parses, so a failed
-    // decryption does not leave an empty file behind.
-    let mut plaintext = Vec::new();
-    let result = decrypt(store, &ciphertext, passwords, &mut plaintext)?;
-    write(output, &plaintext)?;
+
+    // Streamed to a sibling file and renamed on success, rather than buffered
+    // in memory. The property being preserved is that a failed decryption
+    // leaves nothing at the output path; the reason for changing how is that
+    // OpenPGP messages carry compressed layers, sequoia inflates them
+    // transparently, and it bounds the *nesting* of those layers rather than
+    // the bytes they expand to. Anyone can encrypt a highly compressible
+    // message to a published key, so buffering the plaintext made the size of
+    // an allocation the sender's choice. On disk it is the filesystem's
+    // problem, and a partial temp file is removed.
+    let staging = output.with_extension("part");
+    let result = {
+        let file = fs::File::create(&staging)
+            .map_err(|e| Error::io(format!("writing {}", staging.display()), e))?;
+        let mut sink = BufWriter::new(file);
+        match decrypt(store, &ciphertext, passwords, &mut sink) {
+            Ok(result) => {
+                use std::io::Write;
+                sink.flush()
+                    .map_err(|e| Error::io(format!("writing {}", staging.display()), e))?;
+                result
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&staging);
+                return Err(e);
+            }
+        }
+    };
+    fs::rename(&staging, output)
+        .map_err(|e| Error::io(format!("writing {}", output.display()), e))?;
     Ok(result)
 }
 
@@ -728,6 +806,92 @@ mod tests {
 
         assert_eq!(classify(b"just a text file\n"), InputKind::NotOpenPgp);
         assert_eq!(classify(b""), InputKind::NotOpenPgp);
+    }
+
+    /// The size ceiling itself, at a limit small enough to test quickly.
+    #[test]
+    fn the_in_memory_sink_refuses_to_grow_past_its_limit() {
+        let mut out = Vec::new();
+        let mut sink = Bounded {
+            inner: &mut out,
+            written: 0,
+            limit: 1024,
+        };
+        assert!(sink.write_all(&[0u8; 1000]).is_ok());
+        let err = sink
+            .write_all(&[0u8; 100])
+            .expect_err("past the limit must fail");
+        assert!(err.to_string().contains("decrypt it to a file"), "{err}");
+        // And it stopped writing rather than truncating silently.
+        assert!(out.len() <= 1024);
+    }
+
+    /// A compressed layer expands to whatever the sender chose. Sequoia bounds
+    /// how deeply layers may nest, not how far they expand, so the in-memory
+    /// path needs its own ceiling and the file path streams instead of
+    /// buffering. rpgp does not compress on write, so the bomb is built here
+    /// the way a hostile sender would.
+    #[test]
+    fn a_compressed_bomb_streams_to_disk_and_leaves_no_debris() {
+        use sequoia_openpgp::serialize::stream::{Compressor, Encryptor, LiteralWriter, Message};
+        use sequoia_openpgp::types::CompressionAlgorithm;
+
+        let (dir, store) = scratch_store();
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+
+        // 8 MiB of zeroes behind a deflate layer: a few kilobytes on the wire.
+        let bulk = vec![0u8; 8 * 1024 * 1024];
+        let policy = policy();
+        let valid = alice.with_policy(&policy, None).unwrap();
+        let recipients: Vec<_> = valid
+            .keys()
+            .alive()
+            .revoked(false)
+            .supported()
+            .for_transport_encryption()
+            .map(Recipient::from)
+            .collect();
+
+        let mut ciphertext = Vec::new();
+        {
+            let message = Message::new(&mut ciphertext);
+            let message = Encryptor::for_recipients(message, recipients)
+                .build()
+                .unwrap();
+            let message = Compressor::new(message)
+                .algo(CompressionAlgorithm::Zip)
+                .build()
+                .unwrap();
+            let mut message = LiteralWriter::new(message).build().unwrap();
+            message.write_all(&bulk).unwrap();
+            message.finalize().unwrap();
+        }
+        assert!(
+            ciphertext.len() < bulk.len() / 100,
+            "the fixture must actually compress: {} bytes",
+            ciphertext.len()
+        );
+
+        // Streamed to a file: the expansion lands on disk, not in a Vec.
+        let input = dir.path().join("bomb.pgp");
+        std::fs::write(&input, &ciphertext).unwrap();
+        let output = dir.path().join("bomb.out");
+        decrypt_file(&store, &input, &[], &output).unwrap();
+        assert_eq!(std::fs::metadata(&output).unwrap().len(), bulk.len() as u64);
+
+        // A failure leaves neither the output nor the staging file.
+        let bad = dir.path().join("bad.pgp");
+        std::fs::write(&bad, b"-----BEGIN PGP MESSAGE-----\nnonsense\n").unwrap();
+        let out = dir.path().join("bad.out");
+        assert!(decrypt_file(&store, &bad, &[], &out).is_err());
+        assert!(!out.exists(), "no output on failure");
+        assert!(
+            !out.with_extension("part").exists(),
+            "no staging file left behind"
+        );
     }
 
     /// The bounded read must reach the same verdict as reading everything,

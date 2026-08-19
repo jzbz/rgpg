@@ -166,7 +166,7 @@ impl Store {
     /// characters, which holds for both 40-character v4 fingerprints and
     /// 64-character v6 ones.
     fn cert_path(&self, fingerprint: &str) -> PathBuf {
-        let fingerprint = fingerprint.to_lowercase();
+        let fingerprint = hex_only(fingerprint).to_lowercase();
         let (prefix, rest) = fingerprint.split_at(2.min(fingerprint.len()));
         self.cert_dir.join(prefix).join(rest)
     }
@@ -175,7 +175,7 @@ impl Store {
     pub fn revocation_path(&self, fingerprint: &str) -> PathBuf {
         // Normalised like `secret_path`; same reasoning.
         self.revocations_dir
-            .join(format!("{}.rev", fingerprint.to_uppercase()))
+            .join(format!("{}.rev", hex_only(fingerprint).to_uppercase()))
     }
 
     pub fn has_revocation(&self, fingerprint: &str) -> bool {
@@ -490,8 +490,24 @@ impl Store {
         // exists to enforce, remove the public half and orphan the secret on
         // disk. `cert_path` normalises for the same reason, the other way.
         self.secrets_dir
-            .join(format!("{}.pgp", fingerprint.to_uppercase()))
+            .join(format!("{}.pgp", hex_only(fingerprint).to_uppercase()))
     }
+}
+
+/// Keep only the hex digits of `fingerprint`.
+///
+/// Every path in this module is built by interpolating a fingerprint, and each
+/// one is public API or reachable from it. Sequoia-derived hex is all any
+/// in-tree caller passes, so this changes nothing today — but a caller passing
+/// `../../etc/thing` would otherwise have `delete` unlink whatever that named,
+/// and a store is not the place to rely on every future caller being careful.
+/// Stripping rather than erroring keeps the spaced form people paste from the
+/// details pane working.
+fn hex_only(fingerprint: &str) -> String {
+    fingerprint
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .collect()
 }
 
 /// Unlink `path`, treating "it was not there" as success.

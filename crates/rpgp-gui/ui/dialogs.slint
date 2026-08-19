@@ -510,6 +510,15 @@ export component DecryptVerifyDialog inherits DialogShell {
                         tone: signature.good ? Tone.ok : Tone.danger;
                         y: (parent.height - self.height) / 2;
                     }
+                    // Two different questions, two pills: the first says the
+                    // signature checks out against a key, this one says
+                    // whether that key is known to belong to the name beside
+                    // it. Only the second is reassuring on its own.
+                    if signature.good: Pill {
+                        text: signature.authentication;
+                        tone: signature.authenticated ? Tone.accent : Tone.warn;
+                        y: (parent.height - self.height) / 2;
+                    }
                     Text {
                         text: signature.good
                             ? signature.signer
@@ -1105,7 +1114,9 @@ export component NotepadDialog inherits DialogShell {
                 }
                 for signature in root.signatures: Text {
                     text: (signature.good ? "good signature — " : "BAD — ")
-                        + (signature.good ? signature.signer : signature.detail);
+                        + (signature.good
+                            ? signature.signer + " (" + signature.authentication + ")"
+                            : signature.detail);
                     color: Theme.text;
                     font-size: Theme.t-sm;
                     wrap: word-wrap;

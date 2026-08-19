@@ -193,13 +193,7 @@ fn get(url: &str) -> Result<Vec<u8>> {
         .map_err(|e| Error::invalid(format!("cannot start the network runtime: {e}")))?;
 
     runtime.block_on(async {
-        let client = reqwest::Client::builder()
-            .timeout(TIMEOUT)
-            .user_agent(concat!("rpgp/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|e| Error::invalid(format!("cannot build an HTTP client: {e}")))?;
-
-        let response = client
+        let mut response = client()?
             .get(url)
             .send()
             .await
@@ -211,11 +205,30 @@ fn get(url: &str) -> Result<Vec<u8>> {
                 response.status()
             )));
         }
-        Ok(response
-            .bytes()
+
+        // A lookup is the least trusted fetch this app makes: WKD means
+        // whatever domain sits in the address the user typed. Refuse an
+        // announced size over the cap before reading a byte, then hold the
+        // bytes actually received to it as well, because a server is free to
+        // lie about the first or send no length at all.
+        if response
+            .content_length()
+            .is_some_and(|len| len > MAX_REPLY as u64)
+        {
+            return Err(Error::invalid("the reply is too large to be a certificate"));
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
             .map_err(|e| Error::invalid(format!("reading the reply failed: {e}")))?
-            .to_vec())
+        {
+            if body.len() + chunk.len() > MAX_REPLY {
+                return Err(Error::invalid("the reply is too large to be a certificate"));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
     })
 }
 
@@ -397,6 +410,79 @@ mod tests {
             Ok(_) => eprintln!("keyserver: nothing served"),
             Err(e) => eprintln!("keyserver: {e}"),
         }
+    }
+
+    /// Serve one HTTP reply from a throwaway socket and hand back its origin.
+    ///
+    /// Enough of a server to exercise the fetch path and no more: it answers
+    /// exactly one request with whatever bytes the caller supplies.
+    fn serve_once(reply: Vec<u8>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            if let Ok((mut socket, _)) = listener.accept() {
+                let mut scratch = [0u8; 2048];
+                let _ = socket.read(&mut scratch);
+                let _ = socket.write_all(&reply);
+                let _ = socket.flush();
+            }
+        });
+        origin
+    }
+
+    /// The size cap and the redirect policy are claims the module doc makes.
+    /// They were made on the upload path only, and the lookup path — the one
+    /// reachable by any WKD domain a user types — quietly had neither for
+    /// several commits, because nothing tested them. Hence this.
+    ///
+    /// Serial with the other env-var tests by way of a mutex: RPGP_KEYSERVER
+    /// is process-wide state.
+    #[test]
+    fn a_lookup_refuses_an_oversized_reply_and_a_downgrade() {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+
+        // (1) An announced length past the cap is refused before a byte of
+        // body is read.
+        let huge = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+            MAX_REPLY as u64 + 1
+        )
+        .into_bytes();
+        unsafe { std::env::set_var("RPGP_KEYSERVER", serve_once(huge)) };
+        let err = lookup_keyserver("alice@example.org")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("too large"),
+            "announced length not refused: {err}"
+        );
+
+        // (2) A body that runs past the cap with no length announced is cut
+        // off by the streaming check rather than buffered.
+        let mut chunked = b"HTTP/1.1 200 OK\r\nContent-Type: application/pgp-keys\r\n\r\n".to_vec();
+        chunked.extend(std::iter::repeat_n(b'A', MAX_REPLY + 4096));
+        unsafe { std::env::set_var("RPGP_KEYSERVER", serve_once(chunked)) };
+        let err = lookup_keyserver("alice@example.org")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("too large"), "streamed body not capped: {err}");
+
+        // (3) A redirect that leaves HTTPS is refused rather than followed.
+        let redirect =
+            b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/evil\r\nContent-Length: 0\r\n\r\n"
+                .to_vec();
+        unsafe { std::env::set_var("RPGP_KEYSERVER", serve_once(redirect)) };
+        let err = lookup_keyserver("alice@example.org")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("lookup failed") || err.contains("redirect"),
+            "a non-HTTPS redirect should not be followed: {err}"
+        );
+
+        unsafe { std::env::remove_var("RPGP_KEYSERVER") };
     }
 
     /// Publishing against a local stand-in for the VKS API, so the request we

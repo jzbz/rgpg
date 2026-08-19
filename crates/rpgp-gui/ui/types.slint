@@ -61,6 +61,14 @@ export struct SignatureRow {
     good: bool,
     signer: string,
     detail: string,
+    /// Whether the signer's name has been authenticated through the web of
+    /// trust — "verified", "partly verified" or "unverified". A valid
+    /// signature says the bytes came from that *key*; only this says the key
+    /// belongs to the person the name claims.
+    authentication: string,
+    /// True only for a fully authenticated signer, so the reassuring styling
+    /// is reserved for the case that has earned it.
+    authenticated: bool,
 }
 
 // A subkey row in the certificate details dialog.

@@ -163,6 +163,21 @@ struct State {
 
 type Shared = Arc<Mutex<State>>;
 
+/// Take the state lock, ignoring poisoning.
+///
+/// A panic while the lock is held would otherwise poison it and turn one
+/// failed operation into an app that can do nothing at all — every callback
+/// unwrapping the same `PoisonError` in turn. The state behind it is a list of
+/// certificate summaries and some dialog scratch: a panic mid-update leaves it
+/// stale or half-rebuilt, not dangerous, and the next reload overwrites it
+/// wholesale. Carrying on with stale rows beats a window that has stopped
+/// responding.
+fn lock(state: &Shared) -> std::sync::MutexGuard<'_, State> {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 // Callbacks and worker completions reach the window through a weak handle and
 // bail out if it has gone. Unwrapping instead would panic when the user closes
 // the window mid-operation: a worker's completion runs through
@@ -450,7 +465,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
             if ui.get_busy() {
                 return;
             }
-            state.lock().unwrap().filter = text.to_lowercase();
+            lock(&state).filter = text.to_lowercase();
             apply_filter(&ui, &state);
         }
     });
@@ -468,7 +483,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
             if ui.get_busy() {
                 return;
             }
-            state.lock().unwrap().sort = Sort::from_index(index);
+            lock(&state).sort = Sort::from_index(index);
             apply_filter(&ui, &state);
         }
     });
@@ -486,7 +501,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
             if ui.get_busy() {
                 return;
             }
-            state.lock().unwrap().scope = Scope::from_index(index);
+            lock(&state).scope = Scope::from_index(index);
             apply_filter(&ui, &state);
         }
     });
@@ -504,7 +519,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
             if ui.get_busy() {
                 return;
             }
-            let guard = state.lock().unwrap();
+            let guard = lock(&state);
 
             let Some(summary) = usize::try_from(row)
                 .ok()
@@ -548,7 +563,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
                 // certificate, so CertParser rejects it. Same button, because a
                 // user handed a .rev file expects Import to take it.
                 let outcome = {
-                    let guard = state.lock().unwrap();
+                    let guard = lock(&state);
                     match guard.store.import_file(file.path()) {
                         Ok(certs) => Ok(format!("Imported {} certificate(s)", certs.len())),
                         Err(import_error) => {
@@ -583,7 +598,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
                         return;
                     };
                     let row = ui.get_current_row();
-                    let state = state.lock().unwrap();
+                    let state = lock(&state);
                     match usize::try_from(row).ok().and_then(|r| state.shown.get(r)) {
                         Some(s) => (s.fingerprint.clone(), format!("{}.asc", s.key_id)),
                         None => return,
@@ -652,7 +667,7 @@ fn wire_keygen(ui: &AppWindow, state: &Shared) {
                     };
                     ui.set_busy(false);
                     match generated.and_then(|key| {
-                        let guard = state.lock().unwrap();
+                        let guard = lock(&state);
                         guard.store.insert_secret(&key.cert)?;
                         // Written once, now: a revocation certificate cannot be
                         // recreated later without the secret key, and this is
@@ -695,7 +710,7 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let mut guard = state.lock().unwrap();
+            let mut guard = lock(&state);
 
             // Anyone who can receive encrypted mail is a candidate recipient;
             // whatever is selected in the list starts ticked.
@@ -769,7 +784,7 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
                 let Some(ui) = ui_weak.upgrade() else {
                     return;
                 };
-                let mut guard = state.lock().unwrap();
+                let mut guard = lock(&state);
                 guard.se_input = Some(file.path().to_path_buf());
                 push_sign_encrypt(&ui, &guard);
             });
@@ -782,7 +797,7 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let mut guard = state.lock().unwrap();
+            let mut guard = lock(&state);
             // Through the filter: `index` counts shown rows, not recipients.
             if let Some(target) = usize::try_from(index)
                 .ok()
@@ -847,7 +862,7 @@ fn run_sign_encrypt(
     // Snapshot what is needed and release the lock: everything below is I/O,
     // and a card PIN prompt can hold it for a minute while the UI waits.
     let (store, input, signers, recipients) = {
-        let guard = state.lock().unwrap();
+        let guard = lock(state);
         (
             guard.store.clone(),
             guard.se_input.clone(),
@@ -989,7 +1004,7 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let mut guard = state.lock().unwrap();
+            let mut guard = lock(&state);
             guard.dv_input = None;
             guard.dv_data = None;
             guard.dv_kind = InputKind::NotOpenPgp;
@@ -1025,7 +1040,7 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
                 let Some(ui) = ui_weak.upgrade() else {
                     return;
                 };
-                let mut guard = state.lock().unwrap();
+                let mut guard = lock(&state);
                 guard.dv_input = Some(path);
                 guard.dv_kind = kind;
                 ui.set_dv_result(SharedString::new());
@@ -1050,7 +1065,7 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
                 let Some(ui) = ui_weak.upgrade() else {
                     return;
                 };
-                let mut guard = state.lock().unwrap();
+                let mut guard = lock(&state);
                 guard.dv_data = Some(file.path().to_path_buf());
                 push_decrypt_verify(&ui, &guard);
             });
@@ -1078,15 +1093,7 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
                     ui.set_busy(false);
                     match outcome {
                         Ok((summary, tone, result)) => {
-                            let rows: Vec<SignatureRow> = result
-                                .signatures
-                                .iter()
-                                .map(|s| SignatureRow {
-                                    good: s.good,
-                                    signer: s.signer.clone().into(),
-                                    detail: s.detail.clone().into(),
-                                })
-                                .collect();
+                            let rows = signature_rows(&lock(&state).all, &result.signatures);
                             ui.set_dv_signatures(ModelRc::new(VecModel::from(rows)));
                             ui.set_dv_result(summary.clone().into());
                             ui.set_dv_tone(tone);
@@ -1116,7 +1123,7 @@ fn run_decrypt_verify(
     // Snapshot what is needed and release the lock: everything below is I/O,
     // and a card PIN prompt can hold it for a minute while the UI waits.
     let (store, input, kind, data) = {
-        let guard = state.lock().unwrap();
+        let guard = lock(state);
         (
             guard.store.clone(),
             guard.dv_input.clone(),
@@ -1134,10 +1141,8 @@ fn run_decrypt_verify(
 
         let summary = if result.signatures.is_empty() {
             ("The file contains no signature".to_string(), 2)
-        } else if result.all_good() {
-            ("Signature verified".to_string(), 1)
         } else {
-            ("Signature is NOT valid".to_string(), 3)
+            signature_verdict(&lock(state).all, &result)
         };
         return Ok((summary.0, summary.1, result));
     }
@@ -1156,10 +1161,12 @@ fn run_decrypt_verify(
     let written = format!("Decrypted to {}", output.display());
     let summary = if result.signatures.is_empty() {
         (format!("{written}. The message was not signed."), 2)
-    } else if result.all_good() {
-        (format!("{written}, signature verified"), 1)
     } else {
-        (format!("{written}, but a signature is NOT valid"), 3)
+        // The same verdict the verify path gives, prefixed with where the
+        // plaintext went. Composed rather than restated so the two cannot
+        // drift apart on what counts as verified.
+        let (verdict, tone) = signature_verdict(&lock(state).all, &result);
+        (format!("{written}. {verdict}"), tone)
     };
     Ok((summary.0, summary.1, result))
 }
@@ -1190,7 +1197,7 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let mut guard = state.lock().unwrap();
+            let mut guard = lock(&state);
 
             let Some(target) = usize::try_from(ui.get_current_row())
                 .ok()
@@ -1239,7 +1246,7 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let mut guard = state.lock().unwrap();
+            let mut guard = lock(&state);
             if let Some(entry) = usize::try_from(index)
                 .ok()
                 .and_then(|i| guard.certify_user_ids.get_mut(i))
@@ -1301,7 +1308,7 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
             }
 
             let outcome = {
-                let guard = state.lock().unwrap();
+                let guard = lock(&state);
                 let was_root = guard
                     .all
                     .iter()
@@ -1335,7 +1342,7 @@ fn run_certify(
     // Snapshot what is needed and release the lock: everything below is I/O,
     // and a card PIN prompt can hold it for a minute while the UI waits.
     let (store, target, certifier, user_ids) = {
-        let guard = state.lock().unwrap();
+        let guard = lock(state);
         let target = guard
             .certify_target
             .clone()
@@ -1478,7 +1485,7 @@ fn certification_row(certification: &Certification, show_user_id: bool) -> Certi
 
 /// Re-select the row for `fingerprint` after the list has been rebuilt.
 fn reselect(ui: &AppWindow, state: &Shared, fingerprint: &str) {
-    let guard = state.lock().unwrap();
+    let guard = lock(state);
     let Some(index) = guard
         .shown
         .iter()
@@ -1503,7 +1510,7 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            state.lock().unwrap().lookup_results.clear();
+            lock(&state).lookup_results.clear();
             ui.set_lookup_results(ModelRc::new(VecModel::from(Vec::<LookupRow>::new())));
             ui.set_lookup_status(SharedString::new());
             ui.set_lookup_searched(false);
@@ -1536,7 +1543,7 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
 
                     match outcome {
                         Ok(found) => {
-                            let mut guard = state.lock().unwrap();
+                            let mut guard = lock(&state);
                             let rows: Vec<LookupRow> = found
                                 .iter()
                                 .map(|f| {
@@ -1588,7 +1595,7 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
                 return;
             };
             let outcome = {
-                let guard = state.lock().unwrap();
+                let guard = lock(&state);
                 match usize::try_from(index)
                     .ok()
                     .and_then(|i| guard.lookup_results.get(i))
@@ -1751,7 +1758,7 @@ fn run_lifecycle(state: &Shared, input: &LifecycleInput) -> Result<(String, Stri
     );
     // Snapshot what is needed and release the lock: everything below is I/O,
     // and a card PIN prompt can hold it for a minute while the UI waits.
-    let store = state.lock().unwrap().store.clone();
+    let store = lock(state).store.clone();
     let password = Some(password.as_str()).filter(|p| !p.is_empty());
 
     match mode {
@@ -1799,8 +1806,11 @@ fn run_lifecycle(state: &Shared, input: &LifecycleInput) -> Result<(String, Stri
                 fingerprint.to_string(),
             ))
         }
-        _ => {
-            // Publish. Only ever the public half — `keyserver::publish` strips
+        // Publish is mode 3 and says so. It used to be the catch-all arm,
+        // which meant any mode this function did not recognise performed an
+        // irreversible upload to a public keyserver.
+        3 => {
+            // Only ever the public half — `keyserver::publish` strips
             // secret key material before it serialises anything.
             let cert = store
                 .lookup(fingerprint)
@@ -1829,6 +1839,10 @@ fn run_lifecycle(state: &Shared, input: &LifecycleInput) -> Result<(String, Stri
             }
             Ok((message, fingerprint.to_string()))
         }
+        // Anything else is a bug in the dialog, not an instruction. Erring is
+        // the only safe response: every arm above either writes to the store
+        // or uploads to the network.
+        other => Err(format!("Unknown lifecycle action {other}")),
     }
 }
 
@@ -1841,7 +1855,7 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let guard = state.lock().unwrap();
+            let guard = lock(&state);
             let fingerprint = ui.get_detail().fingerprint.to_string();
             let Ok(cert) = guard.store.lookup(&fingerprint) else {
                 return;
@@ -1899,7 +1913,7 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let mut guard = state.lock().unwrap();
+            let mut guard = lock(&state);
             guard.se_filter = text.to_string();
             push_sign_encrypt(&ui, &guard);
         }
@@ -1966,14 +1980,7 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
                     ui.set_busy(false);
                     match outcome {
                         Ok((output, summary, tone, signatures)) => {
-                            let rows: Vec<SignatureRow> = signatures
-                                .iter()
-                                .map(|s| SignatureRow {
-                                    good: s.good,
-                                    signer: s.signer.clone().into(),
-                                    detail: s.detail.clone().into(),
-                                })
-                                .collect();
+                            let rows = signature_rows(&lock(&state).all, &signatures);
                             ui.set_np_signatures(ModelRc::new(VecModel::from(rows)));
                             ui.set_np_output(output.into());
                             ui.set_np_result(summary.clone().into());
@@ -2005,7 +2012,7 @@ fn run_notepad(
     // Snapshot what is needed and release the lock: everything below is I/O,
     // and a card PIN prompt can hold it for a minute while the UI waits.
     let (store, signers, chosen) = {
-        let guard = state.lock().unwrap();
+        let guard = lock(state);
         (
             guard.store.clone(),
             guard.se_signers.clone(),
@@ -2101,11 +2108,7 @@ fn run_notepad(
             if text.contains("-----BEGIN PGP SIGNED MESSAGE-----") {
                 let (verified, result) = ops::verify_inline(&store, text.as_bytes())
                     .map_err(|e| format!("Verification failed: {e}"))?;
-                let (summary, tone) = if result.all_good() {
-                    ("Signature verified".to_string(), 1)
-                } else {
-                    ("Signature is NOT valid".to_string(), 3)
-                };
+                let (summary, tone) = signature_verdict(&lock(state).all, &result);
                 return Ok((string_of(verified), summary, tone, result.signatures));
             }
             // Both fields, as candidates. The notepad shows a key passphrase
@@ -2118,15 +2121,16 @@ fn run_notepad(
             if !secret.is_empty() {
                 candidates.push(secret);
             }
-            let result = ops::decrypt(&store, text.as_bytes(), &candidates, &mut output)
+            // Bounded: the notepad's output is a text box, and a compressed
+            // layer expands to whatever the sender chose.
+            let result = ops::decrypt_to_memory(&store, text.as_bytes(), &candidates, &mut output)
                 .map_err(|e| format!("Decryption failed: {e}"))?;
 
             let (summary, tone) = if result.signatures.is_empty() {
                 ("Decrypted. The message was not signed.".to_string(), 2)
-            } else if result.all_good() {
-                ("Decrypted, signature verified".to_string(), 1)
             } else {
-                ("Decrypted, but a signature is NOT valid".to_string(), 3)
+                let (verdict, tone) = signature_verdict(&lock(state).all, &result);
+                (format!("Decrypted. {verdict}"), tone)
             };
             Ok((string_of(output), summary, tone, result.signatures))
         }
@@ -2142,7 +2146,7 @@ fn string_of(bytes: Vec<u8>) -> String {
 
 /// Fill the shared recipient and signer models from the store.
 fn load_signing_targets(ui: &AppWindow, state: &Shared) {
-    let mut guard = state.lock().unwrap();
+    let mut guard = lock(state);
     let recipients: Vec<Recipient> = guard
         .all
         .iter()
@@ -2201,7 +2205,7 @@ fn wire_delete(ui: &AppWindow, state: &Shared) {
             }
 
             let (has_secret, has_revocation) = {
-                let guard = state.lock().unwrap();
+                let guard = lock(&state);
                 (
                     guard.store.has_secret(&fingerprint),
                     guard.store.has_revocation(&fingerprint),
@@ -2257,7 +2261,7 @@ fn wire_delete(ui: &AppWindow, state: &Shared) {
 /// worker here.
 fn run_delete(state: &Shared, fingerprint: &str) -> Result<String, String> {
     let store = {
-        let guard = state.lock().unwrap();
+        let guard = lock(state);
         guard.store.clone()
     };
 
@@ -2271,7 +2275,7 @@ fn run_delete(state: &Shared, fingerprint: &str) -> Result<String, String> {
             format!("Deleted, but the certificate list could not be refreshed: {e}")
         })?);
 
-    state.lock().unwrap().store = refreshed;
+    lock(state).store = refreshed;
 
     Ok(if had_secret {
         "Key and secret key deleted. The revocation certificate was kept.".to_string()
@@ -2344,7 +2348,7 @@ fn wire_revoke(ui: &AppWindow, state: &Shared) {
                         return;
                     };
                     let fingerprint = ui.get_detail().fingerprint.to_string();
-                    let guard = state.lock().unwrap();
+                    let guard = lock(&state);
                     (
                         guard.store.revocation_path(&fingerprint),
                         format!("{}-revocation.asc", ui.get_detail().key_id),
@@ -2379,7 +2383,7 @@ fn wire_revoke(ui: &AppWindow, state: &Shared) {
 }
 
 fn open_revoke_dialog(ui: &AppWindow, state: &Shared, certification: bool) {
-    let mut guard = state.lock().unwrap();
+    let mut guard = lock(state);
 
     let Some(target) = usize::try_from(ui.get_current_row())
         .ok()
@@ -2409,7 +2413,7 @@ fn run_revoke(
     // Snapshot what is needed and release the lock: everything below is I/O,
     // and a card PIN prompt can hold it for a minute while the UI waits.
     let (store, target, is_certification) = {
-        let guard = state.lock().unwrap();
+        let guard = lock(state);
         (
             guard.store.clone(),
             guard.revoke_target.clone(),
@@ -2502,7 +2506,7 @@ fn run_revoke(
 /// that leave the machine or re-parse every secret key are handed to
 /// [`survey_agent_and_secrets`] instead.
 fn reload(ui: &AppWindow, state: &Shared) {
-    let mut guard = state.lock().unwrap();
+    let mut guard = lock(state);
 
     let certs = match guard.store.certs() {
         Ok(certs) => certs,
@@ -2544,21 +2548,68 @@ fn reload(ui: &AppWindow, state: &Shared) {
     survey_agent_and_secrets(ui, state, store);
 }
 
-/// The slow half of a reload: which keys gpg-agent holds, and which secret key
-/// files will not parse.
+/// Turn signature reports into rows, resolving each signer's authentication.
 ///
-/// Off the event loop, because asking the agent leaves the process. An agent
-/// that has hung — or a stale socket left by one that died — used to freeze the
-/// window until it gave up, holding the state lock the whole time. The list now
-/// appears immediately and the smartcard badges arrive when the agent answers,
-/// or never, with nothing waiting on it.
+/// `rpgp-core` deliberately reports only what it can prove about a signature:
+/// that the bytes verify against a key, and which key. Whether that key really
+/// belongs to the name on it is a property of the whole store — the web of
+/// trust computed in `reload` — so it can only be answered here, where the
+/// store's own view lives.
 ///
-/// The damaged-file survey rides along because it re-parses every secret key,
-/// which is the other thing in a reload that has no business on the UI thread.
-/// The certificates are re-read here rather than handed over from `reload`,
-/// because naming their type would put a `sequoia_openpgp` type in this crate
-/// and the GUI is deliberately free of them. The extra read is the cost of
-/// that boundary, and it is paid on a worker thread where nothing waits for it.
+/// Carrying it this far is the point. The list pane distinguishes a valid
+/// certificate from an authenticated one, exactly as the README describes; the
+/// verify banner did not, so a lookalike key produced the same reassurance as
+/// the real one.
+fn signature_rows(known: &[CertSummary], signatures: &[ops::SignatureReport]) -> Vec<SignatureRow> {
+    signatures
+        .iter()
+        .map(|s| {
+            let authentication = s
+                .fingerprint
+                .as_deref()
+                .and_then(|fingerprint| {
+                    known
+                        .iter()
+                        .find(|c| c.fingerprint.eq_ignore_ascii_case(fingerprint))
+                })
+                .map(|c| c.authentication)
+                .unwrap_or_default();
+            SignatureRow {
+                good: s.good,
+                signer: s.signer.clone().into(),
+                detail: s.detail.clone().into(),
+                authentication: authentication.as_str().into(),
+                authenticated: authentication == rpgp_core::Authentication::Full,
+            }
+        })
+        .collect()
+}
+
+/// The banner for a verify or decrypt result: what to say, and in what tone.
+///
+/// A signature that verifies cryptographically but comes from a key nobody has
+/// authenticated is not "verified" in the sense a reader takes from that word.
+/// Tone 1 (the reassuring one) is reserved for signatures whose signer is
+/// authenticated; a good signature from an unknown key gets tone 2 and says
+/// so.
+fn signature_verdict(known: &[CertSummary], result: &ops::VerifyResult) -> (String, i32) {
+    if result.signatures.is_empty() {
+        return ("The message was not signed".to_string(), 2);
+    }
+    if !result.all_good() {
+        return ("Signature is NOT valid".to_string(), 3);
+    }
+    let rows = signature_rows(known, &result.signatures);
+    if rows.iter().all(|r| r.authenticated) {
+        ("Signature verified".to_string(), 1)
+    } else {
+        (
+            "Valid signature, but the signer's identity is not verified".to_string(),
+            2,
+        )
+    }
+}
+
 /// Put `text` on the system clipboard.
 ///
 /// One clipboard for the process, not one per click. On X11 arboard serves the
@@ -2592,6 +2643,22 @@ fn copy_to_clipboard(text: String) -> std::result::Result<(), String> {
     })
 }
 
+/// The slow half of a reload: which keys gpg-agent holds, and which secret key
+/// files will not parse.
+///
+/// Off the event loop, because asking the agent leaves the process. An agent
+/// that has hung — or a stale socket left by one that died — used to freeze the
+/// window until it gave up, holding the state lock the whole time. The list now
+/// appears immediately and the smartcard badges arrive when the agent answers,
+/// or never, with nothing waiting on it.
+///
+/// The damaged-file survey rides along because it re-parses every secret key,
+/// which is the other thing in a reload that has no business on the UI thread.
+///
+/// The certificates are re-read here rather than handed over from `reload`,
+/// because naming their type would put a `sequoia_openpgp` type in this crate
+/// and the GUI is deliberately free of them. The extra read is the cost of
+/// that boundary, and it is paid on a worker thread where nothing waits for it.
 fn survey_agent_and_secrets(ui: &AppWindow, state: &Shared, store: std::sync::Arc<Store>) {
     let (ui_weak, state) = (ui.as_weak(), state.clone());
     std::thread::spawn(move || {
@@ -2614,7 +2681,7 @@ fn survey_agent_and_secrets(ui: &AppWindow, state: &Shared, store: std::sync::Ar
 
             if !agent_keys.is_empty() {
                 {
-                    let mut guard = state.lock().unwrap();
+                    let mut guard = lock(&state);
                     for summary in guard.all.iter_mut() {
                         if let Some(key) = agent_keys.get(&summary.fingerprint) {
                             summary.agent_backed = true;
@@ -2656,7 +2723,7 @@ fn survey_agent_and_secrets(ui: &AppWindow, state: &Shared, store: std::sync::Ar
 
 /// Rebuild `shown` and the list model from the current scope and search text.
 fn apply_filter(ui: &AppWindow, state: &Shared) {
-    let mut guard = state.lock().unwrap();
+    let mut guard = lock(state);
 
     let (filter, scope, sort) = (guard.filter.clone(), guard.scope, guard.sort);
     let mut shown: Vec<CertSummary> = guard
@@ -2763,4 +2830,85 @@ fn tint_index(fingerprint: &str) -> i32 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     (hash % PALETTE) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rpgp_core::Authentication;
+
+    fn report(fingerprint: &str, good: bool) -> ops::SignatureReport {
+        ops::SignatureReport {
+            good,
+            signer: "Alice <alice@example.org>".to_string(),
+            fingerprint: Some(fingerprint.to_string()),
+            detail: String::new(),
+        }
+    }
+
+    fn known(fingerprint: &str, authentication: Authentication) -> CertSummary {
+        let cert = rpgp_core::keygen::generate(&rpgp_core::keygen::KeyGenRequest::new(
+            "Alice <alice@example.org>",
+        ))
+        .unwrap()
+        .cert;
+        let mut summary = CertSummary::from_cert(&cert);
+        summary.fingerprint = fingerprint.to_string();
+        summary.authentication = authentication;
+        summary
+    }
+
+    /// A signature that verifies says the bytes came from a key. It does not
+    /// say the key belongs to the name printed beside it — and the banner used
+    /// to claim exactly that, so a lookalike key got the same green
+    /// reassurance as the real one.
+    #[test]
+    fn only_an_authenticated_signer_reads_as_verified() {
+        let fingerprint = "AB".repeat(20);
+        let result = ops::VerifyResult {
+            signatures: vec![report(&fingerprint, true)],
+            decrypted_with: None,
+        };
+
+        // Authenticated: the reassuring tone is earned.
+        let store = [known(&fingerprint, Authentication::Full)];
+        let (text, tone) = signature_verdict(&store, &result);
+        assert_eq!(tone, 1, "{text}");
+        assert_eq!(text, "Signature verified");
+
+        // Valid, but nobody has vouched for the name.
+        for weaker in [Authentication::Unknown, Authentication::Marginal] {
+            let store = [known(&fingerprint, weaker)];
+            let (text, tone) = signature_verdict(&store, &result);
+            assert_eq!(tone, 2, "{weaker:?} should not read as verified: {text}");
+            assert!(text.contains("not verified"), "{text}");
+        }
+
+        // A signer we hold no certificate for at all is likewise not verified.
+        let (text, tone) = signature_verdict(&[], &result);
+        assert_eq!(tone, 2, "{text}");
+
+        // A bad signature still outranks everything else.
+        let bad = ops::VerifyResult {
+            signatures: vec![report(&fingerprint, false)],
+            decrypted_with: None,
+        };
+        let store = [known(&fingerprint, Authentication::Full)];
+        assert_eq!(signature_verdict(&store, &bad).1, 3);
+    }
+
+    /// The rows carry the same distinction the banner does.
+    #[test]
+    fn rows_report_each_signers_authentication() {
+        let fingerprint = "CD".repeat(20);
+        let store = [known(&fingerprint, Authentication::Full)];
+        let rows = signature_rows(&store, &[report(&fingerprint, true)]);
+        assert_eq!(rows[0].authentication, "verified");
+        assert!(rows[0].authenticated);
+
+        // Unknown signer: named from the signature, but not vouched for.
+        let rows = signature_rows(&[], &[report(&fingerprint, true)]);
+        assert_eq!(rows[0].authentication, "unverified");
+        assert!(!rows[0].authenticated);
+    }
 }
