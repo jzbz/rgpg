@@ -22,16 +22,85 @@ jobs:
   lint:
     name: Format and clippy
     runs-on: ubuntu-latest
+    # Nothing else bounds a job. GitHub's default is six hours, long enough
+    # that a wedged network call reads as a slow queue rather than a failure.
+    # These ceilings sit well above a cold-cache build and should never fire.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       # capnproto is not optional: sequoia-ipc's build script runs the capnp
       # compiler unconditionally. fontconfig is what Slint draws text with on
-      # Linux; macOS uses CoreText instead and needs neither.
+      # Linux, reached through parley's fontconfig-sys, whose build script
+      # fails the build outright if the pkg-config probe misses; macOS uses
+      # CoreText instead and needs neither. libsqlite3-dev is usually already
+      # on the image, but libsqlite3-sys resolves without its bundled feature
+      # here and links system SQLite, and what the image ships is not a
+      # promise.
+      #
+      # apt has no wall-clock bound of its own. Its timeout is an inactivity
+      # timer that every arriving byte resets, so a mirror that accepts the
+      # connection and then goes quiet mid-transfer holds apt open forever.
+      # That stalled this step for ninety-three minutes, ended only by the
+      # next push cancelling the run. The bound has to come from outside apt.
       - name: Install build dependencies
+        # Backstop for the loop below. A step timeout fails the step where
+        # the fault is instead of letting it eat the whole job's budget.
+        timeout-minutes: 15
+        env:
+          # Nothing to do with update, which is where this has always stalled,
+          # but it stops a maintainer script in install from waiting on a
+          # prompt no one is there to answer.
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y capnproto libfontconfig-dev libsqlite3-dev
+          set -euo pipefail
+
+          # The runner reaches Ubuntu through a mirrorlist: an in-datacentre
+          # Azure mirror first, archive.ubuntu.com behind it. Both have been
+          # seen to stall, so nothing here pins a mirror; the aim is only to
+          # stop waiting on whichever one is sick.
+          opts=(
+            # Two retries rather than the built-in three. The loop below
+            # is the real retry, and every extra in-apt attempt against a
+            # dead mirror is time spent before the fallback gets its turn.
+            -o Acquire::Retries=2
+            # Half the default idle timeout. This cannot end a stall on its
+            # own, since arriving bytes reset it, but it halves the wait
+            # before a mirror that never answers at all is given up on.
+            -o Acquire::http::Timeout=15
+            -o Acquire::https::Timeout=15
+            # Translation indexes are no use to a build, and are three more
+            # transfers per suite that can wedge.
+            -o Acquire::Languages=none
+          )
+
+          for attempt in 1 2 3; do
+            rc=0
+            # `sudo timeout`, not `timeout sudo`: the kill has to reach
+            # apt-get. Under `timeout sudo` the SIGKILL lands on sudo and
+            # orphans a root apt-get still holding the lists lock.
+            sudo timeout --kill-after=15s 90s \
+              apt-get "${opts[@]}" update || rc=$?
+            # A failed update leaves indexes stale or absent, so installing
+            # anyway risks a 404 and spends the attempt's budget for nothing.
+            if [ "$rc" -eq 0 ]; then
+              sudo timeout --kill-after=15s 150s \
+                apt-get "${opts[@]}" install -y \
+                capnproto libfontconfig-dev libsqlite3-dev || rc=$?
+            fi
+            if [ "$rc" -eq 0 ]; then
+              exit 0
+            fi
+
+            echo "::warning::apt attempt $attempt failed with $rc (124 is the hard timeout)"
+            # A killed install can leave dpkg part-way through a transaction,
+            # and the next attempt refuses to start until that is settled.
+            sudo dpkg --configure -a || true
+            sleep $((attempt * 5))
+          done
+
+          echo "::error::apt failed three times; the Ubuntu mirrors are not answering"
+          exit 1
 
       - uses: actions/cache@v4
         with:
@@ -56,6 +125,7 @@ jobs:
 
   test:
     name: Test (${{ matrix.os }})
+    timeout-minutes: 45
     strategy:
       # macOS is the platform with no local machine behind it, so its result
       # must not be hidden by Linux failing first.
@@ -66,14 +136,75 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Same shape, and the same reasoning, as the lint job's copy above. It
+      # is duplicated rather than factored into a local composite action
+      # because step-level timeout-minutes is not supported inside one, and
+      # that backstop is the point.
       - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
+        # Backstop for the loop below. A step timeout fails the step where
+        # the fault is instead of letting it eat the whole job's budget.
+        timeout-minutes: 15
+        env:
+          # Nothing to do with update, which is where this has always stalled,
+          # but it stops a maintainer script in install from waiting on a
+          # prompt no one is there to answer.
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y capnproto libfontconfig-dev libsqlite3-dev
+          set -euo pipefail
 
+          # The runner reaches Ubuntu through a mirrorlist: an in-datacentre
+          # Azure mirror first, archive.ubuntu.com behind it. Both have been
+          # seen to stall, so nothing here pins a mirror; the aim is only to
+          # stop waiting on whichever one is sick.
+          opts=(
+            # Two retries rather than the built-in three. The loop below
+            # is the real retry, and every extra in-apt attempt against a
+            # dead mirror is time spent before the fallback gets its turn.
+            -o Acquire::Retries=2
+            # Half the default idle timeout. This cannot end a stall on its
+            # own, since arriving bytes reset it, but it halves the wait
+            # before a mirror that never answers at all is given up on.
+            -o Acquire::http::Timeout=15
+            -o Acquire::https::Timeout=15
+            # Translation indexes are no use to a build, and are three more
+            # transfers per suite that can wedge.
+            -o Acquire::Languages=none
+          )
+
+          for attempt in 1 2 3; do
+            rc=0
+            # `sudo timeout`, not `timeout sudo`: the kill has to reach
+            # apt-get. Under `timeout sudo` the SIGKILL lands on sudo and
+            # orphans a root apt-get still holding the lists lock.
+            sudo timeout --kill-after=15s 90s \
+              apt-get "${opts[@]}" update || rc=$?
+            # A failed update leaves indexes stale or absent, so installing
+            # anyway risks a 404 and spends the attempt's budget for nothing.
+            if [ "$rc" -eq 0 ]; then
+              sudo timeout --kill-after=15s 150s \
+                apt-get "${opts[@]}" install -y \
+                capnproto libfontconfig-dev libsqlite3-dev || rc=$?
+            fi
+            if [ "$rc" -eq 0 ]; then
+              exit 0
+            fi
+
+            echo "::warning::apt attempt $attempt failed with $rc (124 is the hard timeout)"
+            # A killed install can leave dpkg part-way through a transaction,
+            # and the next attempt refuses to start until that is settled.
+            sudo dpkg --configure -a || true
+            sleep $((attempt * 5))
+          done
+
+          echo "::error::apt failed three times; the Ubuntu mirrors are not answering"
+          exit 1
+
+      # Homebrew has never stalled here, but it is the same kind of unbounded
+      # network call and costs one line to bound.
       - name: Install build dependencies (macOS)
         if: runner.os == 'macOS'
+        timeout-minutes: 10
         run: brew install capnp
 
       - uses: actions/cache@v4
@@ -96,6 +227,7 @@ jobs:
   windows-core:
     name: Windows (rpgp-core)
     runs-on: windows-latest
+    timeout-minutes: 45
     # Blocking, unlike the informational job below, and the only place the
     # Windows ACL code is ever executed. Store writes real DACLs on secret keys
     # now, and the tests that read them back are all that stands between a typo
@@ -107,7 +239,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Chocolatey's CDN rate-limits, and this call is as unbounded as apt was.
       - name: Install capnproto
+        timeout-minutes: 10
         run: choco install capnproto -y --no-progress
 
       - uses: actions/cache@v4
@@ -130,6 +264,7 @@ jobs:
   windows-workspace:
     name: Windows workspace (informational)
     runs-on: windows-latest
+    timeout-minutes: 45
     # Still non-blocking and still only a check. rpgp is not supported on
     # Windows and linking a GUI binary for a platform we do not ship is not
     # worth the minutes. The file-permission half of the question moved to the
@@ -138,7 +273,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Chocolatey's CDN rate-limits, and this call is as unbounded as apt was.
       - name: Install capnproto
+        timeout-minutes: 10
         run: choco install capnproto -y --no-progress
 
       - uses: actions/cache@v4
