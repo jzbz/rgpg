@@ -61,7 +61,21 @@ export component Btn inherits Rectangle {
     /// Fills its container and left-aligns, for buttons used as navigation
     /// rather than as a compact action.
     in property <bool> wide: false;
+    /// What assistive technology should call this. Needed only where `text` is
+    /// empty — an icon-only button announces as nothing otherwise, and several
+    /// of those are destructive.
+    in property <string> label;
     callback clicked();
+
+    // A screen reader needs three things here, and the app used to supply
+    // none of them: what this is, what it is called, and how to press it.
+    // (Slint labels the Text *inside* a button automatically, so the name
+    // often leaked through by accident — but never the role or the action,
+    // and never anything at all for an icon-only button.)
+    accessible-role: button;
+    accessible-label: root.label != "" ? root.label : root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { root.clicked(); }
 
     property <bool> filled: root.variant == Variant.primary || root.variant == Variant.danger;
     property <brush> fill-base: root.variant == Variant.danger ? Theme.danger : Theme.accent;
@@ -111,6 +125,32 @@ export component Btn inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: MouseCursor.pointer;
         clicked => { root.clicked(); }
+    }
+
+    // Reachable by keyboard, not only by pointer. Space and Enter are what a
+    // button is expected to answer to, and the ring is what tells a sighted
+    // keyboard user where they are — without it, tabbing moves an invisible
+    // cursor around the window.
+    key := FocusScope {
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if key.has-focus: Rectangle {
+        border-width: 2px;
+        border-color: Theme.accent;
+        border-radius: root.border-radius + 1px;
+        x: -2px;
+        y: -2px;
+        width: root.width + 4px;
+        height: root.height + 4px;
     }
 }
 
@@ -202,6 +242,15 @@ export component Check inherits Rectangle {
     in property <bool> enabled: true;
     callback toggled();
 
+    // Checked state is the whole point of a checkbox and the one thing a
+    // screen reader cannot infer from the drawing.
+    accessible-role: checkbox;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.toggled(); }
+
     height: 24px;
     // Without this a Check in a row layout expands to an equal share of the
     // width, which spreads two adjacent options to opposite ends of the dialog.
@@ -243,6 +292,28 @@ export component Check inherits Rectangle {
         mouse-cursor: MouseCursor.pointer;
         clicked => { root.toggled(); }
     }
+
+    key := FocusScope {
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                root.toggled();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if key.has-focus: Rectangle {
+        border-width: 2px;
+        border-color: Theme.accent;
+        border-radius: 6px;
+        x: -3px;
+        y: -3px;
+        width: root.width + 6px;
+        height: root.height + 6px;
+    }
 }
 
 // A dropdown. std-widgets' ComboBox would be the platform style's, so this is
@@ -251,7 +322,18 @@ export component Select inherits Rectangle {
     in property <[string]> model;
     in property <bool> enabled: true;
     in-out property <int> current: 0;
+    /// Names the choice being made. The chosen option is the value; without a
+    /// label a screen reader can say "RFC 9580" but not what it is *for*.
+    in property <string> label;
     callback changed(int);
+
+    accessible-role: combobox;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-value: root.current >= 0 && root.current < root.model.length
+        ? root.model[root.current]
+        : "";
+    accessible-action-default => { popup.show(); }
 
     height: 34px;
     background: Theme.surface-sunken;
@@ -287,6 +369,40 @@ export component Select inherits Rectangle {
         enabled: root.enabled;
         mouse-cursor: MouseCursor.pointer;
         clicked => { popup.show(); }
+    }
+
+    key := FocusScope {
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == "\n") {
+                popup.show();
+                return accept;
+            }
+            // Up and down move through the options without opening the list,
+            // which is what a combobox is expected to do.
+            if (event.text == Key.DownArrow && root.current + 1 < root.model.length) {
+                root.current += 1;
+                root.changed(root.current);
+                return accept;
+            }
+            if (event.text == Key.UpArrow && root.current > 0) {
+                root.current -= 1;
+                root.changed(root.current);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if key.has-focus: Rectangle {
+        border-width: 2px;
+        border-color: Theme.accent;
+        border-radius: root.border-radius + 1px;
+        x: -2px;
+        y: -2px;
+        width: root.width + 4px;
+        height: root.height + 4px;
     }
 
     popup := PopupWindow {
@@ -454,6 +570,17 @@ export component FieldRow inherits Rectangle {
             }
 
             if root.copyable: Rectangle {
+                // The copy affordance is this element, and it exists only when
+                // the row is copyable — which is what lets accessible-role be
+                // the constant Slint requires.
+                accessible-role: button;
+                accessible-label: "Copy " + root.label;
+                accessible-description: root.value;
+                accessible-action-default => {
+                    root.copy();
+                    root.copied = true;
+                    settle.running = true;
+                }
                 width: 16px;
                 Icon {
                     glyph: root.copied ? Icons.check : Icons.file;

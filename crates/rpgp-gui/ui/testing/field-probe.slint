@@ -1,7 +1,7 @@
 // Test-only harness: one passphrase Field and one ordinary Field, so what the
 // accessibility tree publishes can be inspected from a Rust test. Not part of
 // the application.
-import { Field } from "../widgets.slint";
+import { Field, Btn, Check, Select, FieldRow } from "../widgets.slint";
 
 export component FieldProbe inherits Window {
     in-out property <string> secret-text <=> pass-field.text;
@@ -18,5 +18,32 @@ export component FieldProbe inherits Window {
         plain-field := Field {
             placeholder: "Search";
         }
+    }
+}
+
+// The interactive controls, so a test can ask what assistive technology would
+// be told about each and whether it can operate them.
+export component ControlProbe inherits Window {
+    in-out property <int> clicks: 0;
+    in-out property <int> toggles: 0;
+    in-out property <int> copies: 0;
+
+    width: 500px;
+    height: 400px;
+
+    VerticalLayout {
+        Btn { text: "Save"; clicked => { root.clicks += 1; } }
+        // Icon-only and destructive: the case that used to announce nothing.
+        Btn { label: "Revoke user ID alice"; clicked => { root.clicks += 1; } }
+        Check { text: "Encrypt"; toggled => { root.toggles += 1; } }
+        Select { label: "Standard"; model: ["Modern", "Compatible"]; }
+        FieldRow {
+            label: "Fingerprint";
+            value: "ABCD 1234";
+            mono: true;
+            copyable: true;
+            copy => { root.copies += 1; }
+        }
+        FieldRow { label: "Algorithm"; value: "Ed25519"; }
     }
 }

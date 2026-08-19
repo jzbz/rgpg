@@ -62,3 +62,70 @@ fn an_ordinary_field_still_publishes_its_contents() {
         "Passphrase",
     );
 }
+
+/// Every interactive control says what it is, what it is called, and can be
+/// operated without a mouse.
+///
+/// Before this, nothing in the app declared a role or an action: a screen
+/// reader saw unlabelled geometry, and an icon-only button — including the
+/// destructive ones — announced nothing at all. Labels leaked through by
+/// accident where a control happened to contain a Text, which is why this
+/// asserts on roles and actions rather than on names alone.
+#[test]
+fn controls_are_announced_and_operable() {
+    i_slint_backend_testing::init_no_event_loop();
+    use i_slint_backend_testing::{AccessibleRole, ElementHandle};
+
+    let probe = ControlProbe::new().unwrap();
+    probe.show().unwrap();
+
+    let by_label = |label: &str| {
+        ElementHandle::find_by_accessible_label(&probe, label)
+            .next()
+            .unwrap_or_else(|| panic!("nothing is called {label:?}"))
+    };
+
+    for (label, role) in [
+        ("Save", AccessibleRole::Button),
+        // The icon-only one: no text to leak a name, so this fails outright
+        // without an explicit label.
+        ("Revoke user ID alice", AccessibleRole::Button),
+        ("Encrypt", AccessibleRole::Checkbox),
+        ("Standard", AccessibleRole::Combobox),
+        ("Copy Fingerprint", AccessibleRole::Button),
+    ] {
+        assert_eq!(
+            by_label(label).accessible_role(),
+            Some(role),
+            "role of {label:?}"
+        );
+    }
+
+    // A row with nothing to copy must not pretend to be a button.
+    assert!(
+        ElementHandle::find_by_accessible_label(&probe, "Copy Algorithm")
+            .next()
+            .is_none(),
+        "a non-copyable row should expose no copy button"
+    );
+
+    // State a screen reader cannot infer from the drawing.
+    assert_eq!(by_label("Encrypt").accessible_checked(), Some(false));
+    assert_eq!(
+        by_label("Standard")
+            .accessible_value()
+            .unwrap_or_default()
+            .as_str(),
+        "Modern"
+    );
+
+    // And each one can actually be operated through the accessibility layer.
+    by_label("Save").invoke_accessible_default_action();
+    by_label("Encrypt").invoke_accessible_default_action();
+    by_label("Copy Fingerprint").invoke_accessible_default_action();
+    assert_eq!(
+        (probe.get_clicks(), probe.get_toggles(), probe.get_copies()),
+        (1, 1, 1),
+        "default actions must reach the callbacks"
+    );
+}

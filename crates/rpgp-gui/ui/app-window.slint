@@ -28,6 +28,15 @@ component RailItem inherits Rectangle {
     in property <bool> active;
     callback clicked();
 
+    // A tab, not a button: these switch which set of certificates the list
+    // shows, and which one is current is the thing worth announcing.
+    accessible-role: tab;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-checkable: true;
+    accessible-checked: root.active;
+    accessible-action-default => { root.clicked(); }
+
     height: 34px;
     border-radius: Theme.r-sm;
     background: root.active ? Theme.selected : (touch.has-hover ? Theme.hover : transparent);
@@ -74,6 +83,17 @@ component CertListRow inherits Rectangle {
     in property <bool> selected;
     in property <bool> enabled: true;
     callback clicked();
+
+    // The row announces who it is and whether it is the selected one. The
+    // description carries the fingerprint, which is what someone listening
+    // rather than looking actually needs to tell two keys apart.
+    accessible-role: list-item;
+    accessible-label: root.cert.primary-user-id;
+    accessible-description: "Key " + root.cert.key-id;
+    accessible-enabled: root.enabled;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
 
     height: 62px;
     background: root.selected ? Theme.selected : (touch.has-hover ? Theme.hover : transparent);
@@ -516,6 +536,8 @@ export component AppWindow inherits Window {
                     }
                     Btn {
                         glyph: Icons.refresh;
+                        // Icon-only, so it carries its own name.
+                        label: "Refresh the certificate list";
                         variant: Variant.ghost;
                         enabled: !root.busy;
                         y: (parent.height - self.height) / 2;

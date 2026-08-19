@@ -1283,6 +1283,15 @@ export component DetailsDialog inherits DialogShell {
                 // The text column only, not the whole row: the pills and the
                 // revoke button sit beside it and a row-wide target would take
                 // clicks meant for them.
+                accessible-role: button;
+                accessible-label: "Copy user ID";
+                accessible-description: uid.text;
+                accessible-action-default => {
+                    root.copy-value(uid.text);
+                    uid-row.copied = true;
+                    settle.running = true;
+                }
+
                 uid-copy := TouchArea {
                     horizontal-stretch: 1;
                     mouse-cursor: MouseCursor.pointer;
@@ -1344,6 +1353,10 @@ export component DetailsDialog inherits DialogShell {
                 if uid.revoked: Pill { text: "revoked"; tone: Tone.danger; }
                 if root.owned && !uid.revoked && !uid.is-primary: Btn {
                     glyph: Icons.revoke;
+                    // Icon-only and destructive: it named nothing at all, so
+                    // the one control here worth being sure about was the one
+                    // announced as an unlabelled button.
+                    label: "Revoke user ID " + uid.text;
                     variant: Variant.ghost;
                     clicked => { root.revoke-user-id(uid.text); }
                 }
@@ -1384,6 +1397,7 @@ export component DetailsDialog inherits DialogShell {
                 if key.revoked: Pill { text: "revoked"; tone: Tone.danger; }
                 if root.owned && !key.revoked: Btn {
                     glyph: Icons.revoke;
+                    label: "Revoke subkey " + key.fingerprint;
                     variant: Variant.ghost;
                     clicked => { root.revoke-subkey(key.fingerprint); }
                 }
@@ -1730,6 +1744,9 @@ export component AboutDialog inherits DialogShell {
         // The icon and the pointer cursor are the affordance: Slint has no
         // text decoration, so a link cannot be underlined.
         link := TouchArea {
+            accessible-role: button;
+            accessible-label: "Open rpgp.app";
+            accessible-action-default => { root.open-link(); }
             height: 24px;
             mouse-cursor: MouseCursor.pointer;
             clicked => { root.open-link(); }
