@@ -44,14 +44,10 @@ jobs:
       # That stalled this step for ninety-three minutes, ended only by the
       # next push cancelling the run. The bound has to come from outside apt.
       - name: Install build dependencies
-        # Backstop for the loop below. A step timeout fails the step where
-        # the fault is instead of letting it eat the whole job's budget.
-        timeout-minutes: 15
-        env:
-          # Nothing to do with update, which is where this has always stalled,
-          # but it stops a maintainer script in install from waiting on a
-          # prompt no one is there to answer.
-          DEBIAN_FRONTEND: noninteractive
+        # Backstop for the loop below, set above its worst case (about
+        # 15m25s) so the loop's own message is what fails, not a bare step
+        # timeout that says only that something took too long.
+        timeout-minutes: 18
         run: |
           set -euo pipefail
 
@@ -64,9 +60,10 @@ jobs:
             # is the real retry, and every extra in-apt attempt against a
             # dead mirror is time spent before the fallback gets its turn.
             -o Acquire::Retries=2
-            # Half the default idle timeout. This cannot end a stall on its
-            # own, since arriving bytes reset it, but it halves the wait
-            # before a mirror that never answers at all is given up on.
+            # An idle timeout, not a wall clock: arriving bytes reset it, so
+            # this cannot end a stall on its own. It only shortens the wait on
+            # a mirror that never answers at all. The runner's own default was
+            # not measured, so this is a bound rather than a known reduction.
             -o Acquire::http::Timeout=15
             -o Acquire::https::Timeout=15
             # Translation indexes are no use to a build, and are three more
@@ -74,32 +71,57 @@ jobs:
             -o Acquire::Languages=none
           )
 
-          for attempt in 1 2 3; do
+          # Sized against measurement, not against the healthy path. The
+          # preamble before the fallback host first answers has been observed
+          # at 38s, 38s and 72s, and update moves 11.4 MB (about 8.5 MB with
+          # translations off). No completed update over the fallback exists in
+          # the record, so this is deliberately loose: too tight a cap turns a
+          # slow-but-recoverable run into a hard red, which is the outcome the
+          # retry exists to avoid.
+          attempts=2
+          for attempt in $(seq 1 $attempts); do
             rc=0
             # `sudo timeout`, not `timeout sudo`: the kill has to reach
             # apt-get. Under `timeout sudo` the SIGKILL lands on sudo and
-            # orphans a root apt-get still holding the lists lock.
-            sudo timeout --kill-after=15s 90s \
+            # orphans a root apt-get still holding the lists lock. The
+            # variable is set inside sudo because sudoers resets the
+            # environment, so a step-level `env:` would never arrive.
+            sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 180s \
               apt-get "${opts[@]}" update || rc=$?
-            # A failed update leaves indexes stale or absent, so installing
-            # anyway risks a 404 and spends the attempt's budget for nothing.
-            if [ "$rc" -eq 0 ]; then
-              sudo timeout --kill-after=15s 150s \
+
+            # A failed update normally means installing would 404 on a stale
+            # index. On the last attempt try regardless: the image ships
+            # pre-seeded lists, and the packages this needs come from release
+            # pockets that are never superseded, so it is the one remaining
+            # path from red back to green.
+            if [ "$rc" -eq 0 ] || [ "$attempt" -eq "$attempts" ]; then
+              rc=0
+              sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 180s \
                 apt-get "${opts[@]}" install -y \
                 capnproto libfontconfig-dev libsqlite3-dev || rc=$?
+              # Only an interrupted install can leave dpkg mid-transaction,
+              # and this is the last unbounded call in the block, so it is
+              # bounded too rather than left to the step ceiling.
+              if [ "$rc" -ne 0 ]; then
+                sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=10s 60s \
+                  dpkg --configure -a || true
+              fi
             fi
+
             if [ "$rc" -eq 0 ]; then
               exit 0
             fi
 
-            echo "::warning::apt attempt $attempt failed with $rc (124 is the hard timeout)"
-            # A killed install can leave dpkg part-way through a transaction,
-            # and the next attempt refuses to start until that is settled.
-            sudo dpkg --configure -a || true
-            sleep $((attempt * 5))
+            echo "::warning::apt attempt $attempt failed with $rc (124 = timed out, 137 = had to be SIGKILLed)"
+            # Guarded so the last iteration does not sleep for nothing, and
+            # written as `if` because a trailing `&&` test would return 1 and
+            # trip `set -e`.
+            if [ "$attempt" -lt "$attempts" ]; then
+              sleep 5
+            fi
           done
 
-          echo "::error::apt failed three times; the Ubuntu mirrors are not answering"
+          echo "::error::apt failed twice; the Ubuntu mirrors are not answering"
           exit 1
 
       - uses: actions/cache@v4
@@ -142,14 +164,10 @@ jobs:
       # that backstop is the point.
       - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
-        # Backstop for the loop below. A step timeout fails the step where
-        # the fault is instead of letting it eat the whole job's budget.
-        timeout-minutes: 15
-        env:
-          # Nothing to do with update, which is where this has always stalled,
-          # but it stops a maintainer script in install from waiting on a
-          # prompt no one is there to answer.
-          DEBIAN_FRONTEND: noninteractive
+        # Backstop for the loop below, set above its worst case (about
+        # 15m25s) so the loop's own message is what fails, not a bare step
+        # timeout that says only that something took too long.
+        timeout-minutes: 18
         run: |
           set -euo pipefail
 
@@ -162,9 +180,10 @@ jobs:
             # is the real retry, and every extra in-apt attempt against a
             # dead mirror is time spent before the fallback gets its turn.
             -o Acquire::Retries=2
-            # Half the default idle timeout. This cannot end a stall on its
-            # own, since arriving bytes reset it, but it halves the wait
-            # before a mirror that never answers at all is given up on.
+            # An idle timeout, not a wall clock: arriving bytes reset it, so
+            # this cannot end a stall on its own. It only shortens the wait on
+            # a mirror that never answers at all. The runner's own default was
+            # not measured, so this is a bound rather than a known reduction.
             -o Acquire::http::Timeout=15
             -o Acquire::https::Timeout=15
             # Translation indexes are no use to a build, and are three more
@@ -172,32 +191,57 @@ jobs:
             -o Acquire::Languages=none
           )
 
-          for attempt in 1 2 3; do
+          # Sized against measurement, not against the healthy path. The
+          # preamble before the fallback host first answers has been observed
+          # at 38s, 38s and 72s, and update moves 11.4 MB (about 8.5 MB with
+          # translations off). No completed update over the fallback exists in
+          # the record, so this is deliberately loose: too tight a cap turns a
+          # slow-but-recoverable run into a hard red, which is the outcome the
+          # retry exists to avoid.
+          attempts=2
+          for attempt in $(seq 1 $attempts); do
             rc=0
             # `sudo timeout`, not `timeout sudo`: the kill has to reach
             # apt-get. Under `timeout sudo` the SIGKILL lands on sudo and
-            # orphans a root apt-get still holding the lists lock.
-            sudo timeout --kill-after=15s 90s \
+            # orphans a root apt-get still holding the lists lock. The
+            # variable is set inside sudo because sudoers resets the
+            # environment, so a step-level `env:` would never arrive.
+            sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 180s \
               apt-get "${opts[@]}" update || rc=$?
-            # A failed update leaves indexes stale or absent, so installing
-            # anyway risks a 404 and spends the attempt's budget for nothing.
-            if [ "$rc" -eq 0 ]; then
-              sudo timeout --kill-after=15s 150s \
+
+            # A failed update normally means installing would 404 on a stale
+            # index. On the last attempt try regardless: the image ships
+            # pre-seeded lists, and the packages this needs come from release
+            # pockets that are never superseded, so it is the one remaining
+            # path from red back to green.
+            if [ "$rc" -eq 0 ] || [ "$attempt" -eq "$attempts" ]; then
+              rc=0
+              sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 180s \
                 apt-get "${opts[@]}" install -y \
                 capnproto libfontconfig-dev libsqlite3-dev || rc=$?
+              # Only an interrupted install can leave dpkg mid-transaction,
+              # and this is the last unbounded call in the block, so it is
+              # bounded too rather than left to the step ceiling.
+              if [ "$rc" -ne 0 ]; then
+                sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=10s 60s \
+                  dpkg --configure -a || true
+              fi
             fi
+
             if [ "$rc" -eq 0 ]; then
               exit 0
             fi
 
-            echo "::warning::apt attempt $attempt failed with $rc (124 is the hard timeout)"
-            # A killed install can leave dpkg part-way through a transaction,
-            # and the next attempt refuses to start until that is settled.
-            sudo dpkg --configure -a || true
-            sleep $((attempt * 5))
+            echo "::warning::apt attempt $attempt failed with $rc (124 = timed out, 137 = had to be SIGKILLed)"
+            # Guarded so the last iteration does not sleep for nothing, and
+            # written as `if` because a trailing `&&` test would return 1 and
+            # trip `set -e`.
+            if [ "$attempt" -lt "$attempts" ]; then
+              sleep 5
+            fi
           done
 
-          echo "::error::apt failed three times; the Ubuntu mirrors are not answering"
+          echo "::error::apt failed twice; the Ubuntu mirrors are not answering"
           exit 1
 
       # Homebrew has never stalled here, but it is the same kind of unbounded
