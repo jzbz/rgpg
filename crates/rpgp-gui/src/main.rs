@@ -2453,6 +2453,28 @@ fn reload(ui: &AppWindow, state: &Shared) {
         }
     }
 
+    // A secret key file that will not parse is skipped rather than allowed to
+    // hide every other key, but skipping silently would turn "my key is gone"
+    // into a mystery. Say which file, so the user can look at it.
+    let damaged = guard.store.damaged_secret_files();
+    if !damaged.is_empty() {
+        let names: Vec<String> = damaged
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .collect();
+        ui.set_status(
+            format!(
+                "{} secret key file{} could not be read and {} skipped: {}",
+                damaged.len(),
+                if damaged.len() == 1 { "" } else { "s" },
+                if damaged.len() == 1 { "was" } else { "were" },
+                names.join(", ")
+            )
+            .into(),
+        );
+    }
+
     // Ordering belongs to apply_filter, so changing the sort does not
     // require re-reading the store.
 

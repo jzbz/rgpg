@@ -101,6 +101,17 @@ impl Store {
         for path in existing_files(secrets_dir) {
             restrict(&path, 0o600)?;
         }
+        // The revocations directory too, when there is one. Anyone holding a
+        // revocation certificate can retire the key it belongs to, and the
+        // module doc has always claimed these are tightened on open — until
+        // now it was only the secrets that were.
+        let revocations_dir = secrets_dir.with_file_name("revocations");
+        if revocations_dir.is_dir() {
+            restrict(&revocations_dir, 0o700)?;
+            for path in existing_files(&revocations_dir) {
+                restrict(&path, 0o600)?;
+            }
+        }
 
         Ok(Store {
             certs: CertStore::open(cert_dir)?,
@@ -270,8 +281,19 @@ impl Store {
             return Err(Error::invalid("certificate carries no secret key material"));
         }
         let path = self.secret_path(&cert.fingerprint().to_hex());
-        let mut file = create_private(&path)?;
-        cert.as_tsk().serialize(&mut file)?;
+        // Written beside the target and renamed into place, so a crash while
+        // serialising leaves a stray .tmp rather than a truncated .pgp. The
+        // rename keeps the private mode/ACL the file was created with, and the
+        // extension keeps secret_certs from ever seeing a half-written key.
+        let staging = path.with_extension("pgp.tmp");
+        {
+            let mut file = create_private(&staging)?;
+            cert.as_tsk().serialize(&mut file)?;
+            file.sync_all()
+                .map_err(|e| Error::io(format!("writing {}", staging.display()), e))?;
+        }
+        fs::rename(&staging, &path)
+            .map_err(|e| Error::io(format!("writing {}", path.display()), e))?;
         self.insert(cert)
     }
 
@@ -292,11 +314,32 @@ impl Store {
             let path = entry
                 .map_err(|e| Error::io(format!("reading {}", self.secrets_dir.display()), e))?
                 .path();
-            if path.extension().is_some_and(|e| e == "pgp") {
-                out.push(Cert::from_file(&path)?);
+            if !path.extension().is_some_and(|e| e == "pgp") {
+                continue;
+            }
+            // Skip what will not parse rather than fail the listing. One
+            // damaged or stray file used to disable every secret key at once:
+            // decryption, signing and web-of-trust roots all read this list,
+            // and each reported an error that pointed away from the cause.
+            // `damaged_secret_files` names the offenders for the UI.
+            if let Ok(cert) = Cert::from_file(&path) {
+                out.push(cert);
             }
         }
         Ok(out)
+    }
+
+    /// Files in the secrets directory that look like keys but will not parse.
+    ///
+    /// The complement of [`Store::secret_certs`], for telling the user why a
+    /// key they expect is missing instead of silently pretending it never
+    /// existed.
+    pub fn damaged_secret_files(&self) -> Vec<PathBuf> {
+        existing_files(&self.secrets_dir)
+            .into_iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "pgp"))
+            .filter(|p| Cert::from_file(p).is_err())
+            .collect()
     }
 
     /// The secret key for `fingerprint`, if this store holds one.
@@ -379,8 +422,17 @@ impl Store {
 
         let parser = sequoia_openpgp::cert::CertParser::from_file(path)?;
         let mut imported = Vec::new();
+        let mut skipped = 0usize;
         for cert in parser {
-            let cert = cert?;
+            // CertParser reports a certificate it cannot parse and carries on
+            // to the next, so an error here is one bad entry, not a bad file.
+            // Aborting used to leave the store half-updated and report total
+            // failure after the certificates before the bad one had already
+            // been written.
+            let Ok(cert) = cert else {
+                skipped += 1;
+                continue;
+            };
             if cert.is_tsk() {
                 self.insert_secret(&cert)?;
             } else {
@@ -389,10 +441,14 @@ impl Store {
             imported.push(cert);
         }
         if imported.is_empty() {
-            return Err(Error::invalid(format!(
-                "{} contains no OpenPGP certificates",
-                path.display()
-            )));
+            return Err(Error::invalid(if skipped == 0 {
+                format!("{} contains no OpenPGP certificates", path.display())
+            } else {
+                format!(
+                    "{} contains no readable OpenPGP certificates ({skipped} could not be parsed)",
+                    path.display()
+                )
+            }));
         }
         Ok(imported)
     }
@@ -411,7 +467,13 @@ impl Store {
         )?;
         for fpr in fingerprints {
             let cert = self.lookup(fpr)?;
-            cert.strip_secret_key_material().serialize(&mut writer)?;
+            // `export`, not `serialize`. They differ in exactly one thing:
+            // export omits signatures marked non-exportable, which is what a
+            // "local" certification made in this app is. serialize wrote them
+            // out, so a private trust statement — signed, attributable — went
+            // to whoever received the file, despite the certify dialog's
+            // publishable/local distinction promising it would not.
+            cert.strip_secret_key_material().export(&mut writer)?;
         }
         writer.finalize()?;
         Ok(())
@@ -984,12 +1046,124 @@ mod tests {
         )
         .unwrap();
 
+        // And the revocations, which the docs always said were covered.
+        fs::set_permissions(&store.revocations_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(
+            store.revocation_path(&fingerprint),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+
         let reopened = Store::open(dir.path().join("certs.d"), &secrets).unwrap();
         assert_eq!(mode(&secrets), 0o700, "secrets directory after reopen");
         assert_eq!(
             mode(&reopened.secret_path(&fingerprint)),
             0o600,
             "secret key after reopen",
+        );
+        assert_eq!(
+            mode(&reopened.revocations_dir),
+            0o700,
+            "revocations directory after reopen",
+        );
+        assert_eq!(
+            mode(&reopened.revocation_path(&fingerprint)),
+            0o600,
+            "revocation certificate after reopen",
+        );
+    }
+
+    /// One file that will not parse used to take every secret key with it —
+    /// and with them decryption, signing and the web-of-trust roots.
+    #[test]
+    fn a_damaged_secret_file_does_not_hide_the_others() {
+        let (_dir, store) = scratch();
+        let cert = crate::keygen::generate(&crate::keygen::KeyGenRequest::new(
+            "Alice <alice@example.org>",
+        ))
+        .unwrap()
+        .cert;
+        store.insert_secret(&cert).unwrap();
+
+        // What a crash mid-write, or a stray file, leaves behind.
+        let junk = store.secrets_dir.join("junk.pgp");
+        fs::write(&junk, b"this is not a key").unwrap();
+        let empty = store.secrets_dir.join("truncated.pgp");
+        fs::write(&empty, b"").unwrap();
+
+        let certs = store.secret_certs().unwrap();
+        assert_eq!(certs.len(), 1, "the good key must still be listed");
+        assert_eq!(certs[0].fingerprint(), cert.fingerprint());
+
+        let mut damaged = store.damaged_secret_files();
+        damaged.sort();
+        assert_eq!(damaged, vec![junk, empty]);
+    }
+
+    /// A "local" certification must never leave the store in an export.
+    #[test]
+    fn export_omits_local_certifications() {
+        use sequoia_openpgp::parse::Parse;
+
+        let (dir, store) = scratch();
+        let generate = |uid: &str| {
+            crate::keygen::generate(&crate::keygen::KeyGenRequest::new(uid))
+                .unwrap()
+                .cert
+        };
+        let alice = generate("Alice <alice@example.org>");
+        let bob = generate("Bob <bob@example.org>");
+        store.insert_secret(&alice).unwrap();
+        store.insert(&bob).unwrap();
+
+        let certify = |exportable: bool| {
+            crate::certify::certify(
+                &store,
+                &crate::certify::CertifyRequest {
+                    certifier: alice.fingerprint().to_hex(),
+                    target: bob.fingerprint().to_hex(),
+                    user_ids: vec!["Bob <bob@example.org>".into()],
+                    exportable,
+                    depth: 0,
+                    amount: crate::certify::FULL,
+                    expires: None,
+                    password: None,
+                },
+            )
+            .unwrap()
+        };
+        let count_certifications =
+            |cert: &Cert| -> usize { cert.userids().map(|ua| ua.certifications().count()).sum() };
+
+        // Local first. In the store it exists; in the export it must not.
+        certify(false);
+        assert_eq!(
+            count_certifications(&store.lookup(&bob.fingerprint().to_hex()).unwrap()),
+            1
+        );
+        let out = dir.path().join("bob-local.asc");
+        store
+            .export_file(&[bob.fingerprint().to_hex()], &out)
+            .unwrap();
+        let exported = Cert::from_file(&out).unwrap();
+        assert_eq!(
+            count_certifications(&exported),
+            0,
+            "a local certification leaked into the export"
+        );
+
+        // Control: a publishable one is written, so the export is not merely
+        // stripping everything.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        certify(true);
+        store
+            .export_file(&[bob.fingerprint().to_hex()], &out)
+            .unwrap();
+        let exported = Cert::from_file(&out).unwrap();
+        assert_eq!(
+            count_certifications(&exported),
+            1,
+            "the publishable one should be there"
         );
     }
 

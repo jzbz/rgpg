@@ -328,7 +328,10 @@ impl DecryptionHelper for Helper<'_> {
         // recipient names nothing at all, so there is no lookup by primary
         // fingerprint to be done here: walk the secret keys we hold and match
         // on key handles.
-        let secrets = self.store.secret_certs().unwrap_or_default();
+        // Not unwrap_or_default: an unreadable secrets directory is a
+        // different failure from an empty one, and reporting it as "no key
+        // opens this message" sent the user looking at the wrong thing.
+        let secrets = self.store.secret_certs()?;
 
         for pkesk in pkesks {
             for cert in &secrets {
@@ -402,7 +405,7 @@ impl DecryptionHelper for Helper<'_> {
         // Read the store once, not once per recipient: certs() parses every
         // certificate it returns, and a message to several people would
         // otherwise re-parse the whole store for each of them.
-        let candidates = self.store.certs().unwrap_or_default();
+        let candidates = self.store.certs()?;
 
         for pkesk in pkesks {
             for cert in &candidates {

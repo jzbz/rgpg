@@ -224,7 +224,11 @@ pub fn publish(cert: &Cert) -> Result<Published> {
     use sequoia_openpgp::serialize::SerializeInto;
 
     let public = cert.clone().strip_secret_key_material();
-    let armored = String::from_utf8(public.armored().to_vec()?)
+    // export_to_vec, not to_vec: the difference is that export omits
+    // signatures marked non-exportable, which is what a "local" certification
+    // made in this app is. to_vec would have sent every private trust
+    // statement the user ever made about this key to a public server.
+    let armored = String::from_utf8(public.armored().export_to_vec()?)
         .map_err(|_| Error::invalid("the certificate did not armor as text"))?;
 
     let body = serde_json::json!({ "keytext": armored });
