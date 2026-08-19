@@ -459,6 +459,28 @@ pub enum InputKind {
 }
 
 /// Decide what `data` is, so the UI knows whether to ask for a second file.
+/// [`classify`] for a file, reading only as much of it as the answer needs.
+///
+/// The armor check looks at the first kilobyte and the binary check at the
+/// first packet's header, so a prefix decides it. The caller used to read the
+/// whole file to ask this question — on the UI thread, from a file dialog,
+/// where picking a multi-gigabyte archive meant reading a multi-gigabyte
+/// archive before the window could repaint.
+pub fn classify_file(path: &Path) -> InputKind {
+    /// Comfortably past the kilobyte of armor header and any first-packet
+    /// header, while still being a read that cannot hurt.
+    const ENOUGH: u64 = 64 * 1024;
+
+    let Ok(file) = fs::File::open(path) else {
+        return InputKind::NotOpenPgp;
+    };
+    let mut head = Vec::new();
+    if std::io::Read::read_to_end(&mut std::io::Read::take(file, ENOUGH), &mut head).is_err() {
+        return InputKind::NotOpenPgp;
+    }
+    classify(&head)
+}
+
 pub fn classify(data: &[u8]) -> InputKind {
     fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         haystack
@@ -504,12 +526,48 @@ pub fn classify(data: &[u8]) -> InputKind {
 
 /// `notes.txt` -> `notes.txt.asc`.
 pub fn encrypted_name(input: &Path) -> PathBuf {
-    append_extension(input, "asc")
+    free_name(append_extension(input, "asc"))
+}
+
+/// The first name in the `name`, `name (1)`, `name (2)` … series that is not
+/// already taken.
+///
+/// Every output path here is derived from the input rather than chosen by the
+/// user, so without this an operation silently destroys an unrelated file that
+/// happens to sit at the derived name: decrypting `notes.txt.asc` next to a
+/// `notes.txt` you wrote yourself overwrites your notes. Deriving a free name
+/// is quieter than a prompt and loses nothing, since the result is reported.
+///
+/// Racy in the strict sense — the name can be taken between the check and the
+/// write — but the alternative is clobbering by design rather than by
+/// collision, and the caller is a person picking a file.
+fn free_name(path: PathBuf) -> PathBuf {
+    if !path.exists() {
+        return path;
+    }
+    let stem = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    // Insert before the extension when there is one: `notes (1).txt`, not
+    // `notes.txt (1)`, so the file still opens in the right application.
+    let (base, ext) = match stem.rsplit_once('.') {
+        Some((base, ext)) if !base.is_empty() => (base.to_string(), format!(".{ext}")),
+        _ => (stem.clone(), String::new()),
+    };
+    for n in 1..1000 {
+        let candidate = parent.join(format!("{base} ({n}){ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    path
 }
 
 /// `notes.txt` -> `notes.txt.sig`.
 pub fn signature_name(input: &Path) -> PathBuf {
-    append_extension(input, "sig")
+    free_name(append_extension(input, "sig"))
 }
 
 /// `notes.txt.asc` -> `notes.txt`. A name with no OpenPGP extension to strip
@@ -519,11 +577,11 @@ pub fn decrypted_name(input: &Path) -> PathBuf {
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| matches!(e, "asc" | "pgp" | "gpg"));
-    if strippable {
+    free_name(if strippable {
         input.with_extension("")
     } else {
         append_extension(input, "out")
-    }
+    })
 }
 
 fn append_extension(path: &Path, extension: &str) -> PathBuf {
@@ -670,6 +728,80 @@ mod tests {
 
         assert_eq!(classify(b"just a text file\n"), InputKind::NotOpenPgp);
         assert_eq!(classify(b""), InputKind::NotOpenPgp);
+    }
+
+    /// The bounded read must reach the same verdict as reading everything,
+    /// including on a file far larger than the prefix.
+    /// The derived name steps aside rather than destroying an unrelated file
+    /// that happens to be sitting there.
+    #[test]
+    fn derived_names_do_not_clobber() {
+        let dir = tempfile::tempdir().unwrap();
+        let notes = dir.path().join("notes.txt");
+        std::fs::write(&notes, b"mine").unwrap();
+
+        // Decrypting notes.txt.asc would land on notes.txt, which exists.
+        let encrypted = dir.path().join("notes.txt.asc");
+        std::fs::write(&encrypted, b"x").unwrap();
+        let out = decrypted_name(&encrypted);
+        assert_eq!(
+            out,
+            dir.path().join("notes (1).txt"),
+            "must not target notes.txt"
+        );
+        assert_eq!(
+            std::fs::read(&notes).unwrap(),
+            b"mine",
+            "the original is untouched"
+        );
+
+        // And it keeps stepping while names are taken.
+        std::fs::write(&out, b"first").unwrap();
+        assert_eq!(decrypted_name(&encrypted), dir.path().join("notes (2).txt"));
+
+        // The suffix goes before the extension, so the result is still an
+        // .asc and still opens as one.
+        assert_eq!(encrypted_name(&notes), dir.path().join("notes.txt (1).asc"));
+
+        // A free name is returned unchanged.
+        assert_eq!(
+            decrypted_name(&dir.path().join("fresh.txt.asc")),
+            dir.path().join("fresh.txt")
+        );
+    }
+
+    #[test]
+    fn classify_file_agrees_with_classify_on_a_large_file() {
+        let (dir, store) = scratch_store();
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+
+        // Several megabytes, so the whole thing is far past the 64KiB prefix.
+        let bulk = vec![b'x'; 4 * 1024 * 1024];
+
+        let armored = dir.path().join("m.asc");
+        let mut out = Vec::new();
+        encrypt(std::slice::from_ref(&alice), &[], None, &bulk, &mut out).unwrap();
+        std::fs::write(&armored, &out).unwrap();
+        assert_eq!(classify(&out), InputKind::Message);
+        assert_eq!(classify_file(&armored), InputKind::Message);
+
+        let sig = dir.path().join("m.sig");
+        let mut out = Vec::new();
+        sign_detached(&alice, None, &bulk, &mut out).unwrap();
+        std::fs::write(&sig, &out).unwrap();
+        assert_eq!(classify_file(&sig), InputKind::DetachedSignature);
+
+        let plain = dir.path().join("plain.bin");
+        std::fs::write(&plain, &bulk).unwrap();
+        assert_eq!(classify_file(&plain), InputKind::NotOpenPgp);
+
+        assert_eq!(
+            classify_file(&dir.path().join("nope")),
+            InputKind::NotOpenPgp
+        );
     }
 
     #[test]

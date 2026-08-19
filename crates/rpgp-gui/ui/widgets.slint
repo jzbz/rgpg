@@ -484,7 +484,16 @@ export component DialogShell inherits Rectangle {
         clicked => { root.dismissed(); }
     }
 
+    // The scope wraps the card rather than sitting beside it. Slint delivers a
+    // key only along the focused item's ancestor chain, so as a sibling this
+    // never saw Escape once a Field inside the card took focus — which is the
+    // state a user is in immediately after typing a name or a passphrase, in
+    // nine of the twelve dialogs. An explicit size is required: FocusScope
+    // reports no layout info of its own, and a zero-sized scope would leave
+    // the card centred against nothing and drawn off-screen.
     focus := FocusScope {
+        width: 100%;
+        height: 100%;
         key-pressed(event) => {
             if (event.text == Key.Escape) {
                 root.dismissed();
@@ -492,59 +501,59 @@ export component DialogShell inherits Rectangle {
             }
             return reject;
         }
-    }
 
-    Rectangle {
-        width: root.card-width;
-        // min() rather than max-height: setting both height and max-height is
-        // a Slint warning, and the card must never outgrow the window.
-        // s4, not s6: a 32px gutter top and bottom cost 64px of the window,
-        // which on a short screen is the difference between a dialog fitting
-        // and needing to be scrolled by one line.
-        height: min(content.preferred-height, root.height - 2 * Theme.s4);
-        // Belt and braces for the case a dialog's content still cannot fit:
-        // clipped is recoverable, whereas controls drawn outside the card look
-        // like a rendering fault.
-        clip: true;
-        background: Theme.surface;
-        border-radius: Theme.r-lg;
-        border-width: 1px;
-        border-color: Theme.border-strong;
-        drop-shadow-blur: 48px;
-        drop-shadow-color: #00000059;
-        drop-shadow-offset-y: 16px;
+        Rectangle {
+            width: root.card-width;
+            // min() rather than max-height: setting both height and max-height is
+            // a Slint warning, and the card must never outgrow the window.
+            // s4, not s6: a 32px gutter top and bottom cost 64px of the window,
+            // which on a short screen is the difference between a dialog fitting
+            // and needing to be scrolled by one line.
+            height: min(content.preferred-height, root.height - 2 * Theme.s4);
+            // Belt and braces for the case a dialog's content still cannot fit:
+            // clipped is recoverable, whereas controls drawn outside the card look
+            // like a rendering fault.
+            clip: true;
+            background: Theme.surface;
+            border-radius: Theme.r-lg;
+            border-width: 1px;
+            border-color: Theme.border-strong;
+            drop-shadow-blur: 48px;
+            drop-shadow-color: #00000059;
+            drop-shadow-offset-y: 16px;
 
-        // Clicks inside the card must not reach the scrim behind it.
-        TouchArea {}
+            // Clicks inside the card must not reach the scrim behind it.
+            TouchArea {}
 
-        content := VerticalLayout {
-            padding: Theme.s5;
-            spacing: Theme.s4;
+            content := VerticalLayout {
+                padding: Theme.s5;
+                spacing: Theme.s4;
 
-            VerticalLayout {
-                spacing: Theme.s1;
-                // Conditional like the subtitle below, so a dialog that draws
-                // its own heading — About, with the wordmark — does not get an
-                // empty line above it.
-                if root.title != "": Text {
-                    text: root.title;
-                    color: Theme.text;
-                    font-size: Theme.t-xl;
-                    font-weight: Theme.w-bold;
+                VerticalLayout {
+                    spacing: Theme.s1;
+                    // Conditional like the subtitle below, so a dialog that draws
+                    // its own heading — About, with the wordmark — does not get an
+                    // empty line above it.
+                    if root.title != "": Text {
+                        text: root.title;
+                        color: Theme.text;
+                        font-size: Theme.t-xl;
+                        font-weight: Theme.w-bold;
+                    }
+                    if root.subtitle != "": Text {
+                        text: root.subtitle;
+                        color: Theme.text-dim;
+                        font-size: Theme.t-md;
+                        wrap: word-wrap;
+                    }
                 }
-                if root.subtitle != "": Text {
-                    text: root.subtitle;
-                    color: Theme.text-dim;
-                    font-size: Theme.t-md;
-                    wrap: word-wrap;
-                }
+
+                @children
             }
-
-            @children
         }
-    }
 
-    init => { focus.focus(); }
+        init => { focus.focus(); }
+    }
 }
 
 /// Multi-line text entry, for the notepad.

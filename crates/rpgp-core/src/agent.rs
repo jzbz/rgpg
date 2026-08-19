@@ -59,34 +59,6 @@ fn runtime() -> Result<&'static Runtime> {
         .map_err(|e| Error::invalid(format!("cannot start the agent runtime: {e}")))
 }
 
-/// Tell the agent where to raise its pinentry, as gpg does on every connection.
-///
-/// Without this the agent has no terminal and no display to prompt on and
-/// fails with "Inappropriate ioctl for device <Pinentry>". It bites decryption
-/// rather than signing only because a signing PIN is usually already cached.
-///
-/// Values are checked before being sent. An Assuan option value cannot contain
-/// whitespace, and `GPG_TTY` is very often the literal string "not a tty" when
-/// a program was started without a terminal — sending that malforms the
-/// command, and the agent then rejects whatever comes *next*, which makes the
-/// failure look like it belongs to an unrelated call.
-async fn set_pinentry_context(agent: &mut Agent) {
-    let usable = |value: Option<String>| {
-        value.filter(|v| !v.is_empty() && !v.chars().any(|c| c.is_whitespace() || c.is_control()))
-    };
-
-    for (option, value) in [
-        ("display", usable(std::env::var("DISPLAY").ok())),
-        ("ttyname", usable(std::env::var("GPG_TTY").ok())),
-        ("ttytype", usable(std::env::var("TERM").ok())),
-    ] {
-        let Some(value) = value else { continue };
-        // Best effort: an agent that refuses one of these can still use keys
-        // whose PIN is cached, and refusing to connect would be worse.
-        let _ = agent.send_simple(format!("OPTION {option}={value}")).await;
-    }
-}
-
 /// How long the app will wait for the agent to answer a question that needs
 /// no human — connecting, listing keys.
 ///
@@ -98,11 +70,18 @@ const ENUMERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 
 fn connect() -> Result<Agent> {
     runtime()?.block_on(async {
-        let mut agent = tokio::time::timeout(ENUMERATION_TIMEOUT, Agent::connect_to_default())
+        // No pinentry context is set here, deliberately. This connection only
+        // ever lists keys and is dropped before any crypto runs; the prompting
+        // paths open their own connection and send their own options, built by
+        // sequoia-gpg-agent from GPG_TTY, TERM, DISPLAY and friends
+        // (sequoia-gpg-agent 0.6.2 KeyPair::sign_async / decrypt_async).
+        // Assuan options are per-connection state, so anything set here could
+        // never have reached a prompt — it only cost three round trips on
+        // every connect, which annotate and every crypto operation make.
+        let agent = tokio::time::timeout(ENUMERATION_TIMEOUT, Agent::connect_to_default())
             .await
             .map_err(|_| Error::invalid("gpg-agent did not answer in time"))?
             .map_err(|e| Error::invalid(format!("no gpg-agent to talk to: {e}")))?;
-        set_pinentry_context(&mut agent).await;
         Ok(agent)
     })
 }

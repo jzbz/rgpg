@@ -2,6 +2,8 @@
 // macOS today, but the attribute is free and keeps a cross-compile honest.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1015,11 +1017,10 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
                 };
 
                 let path = file.path().to_path_buf();
-                // Reading the head of the file decides whether the dialog has
-                // to ask for the signed file as well.
-                let kind = std::fs::read(&path)
-                    .map(|bytes| ops::classify(&bytes))
-                    .unwrap_or(InputKind::NotOpenPgp);
+                // Reads only as far as the answer needs, which decides
+                // whether the dialog has to ask for the signed file as well.
+                // This used to read the whole file, here on the event loop.
+                let kind = ops::classify_file(&path);
 
                 let Some(ui) = ui_weak.upgrade() else {
                     return;
@@ -1399,9 +1400,21 @@ fn push_certifications(ui: &AppWindow, state: &State, summary: &CertSummary) {
         Err(_) => Vec::new(),
     };
 
-    // Offer to withdraw only what is actually still standing.
-    let withdrawable = certifications.iter().any(|c| c.by_me && !c.is_revocation)
-        && !certifications.iter().any(|c| c.by_me && c.is_revocation);
+    // Offer to withdraw only what is actually still standing — per key and
+    // per user ID, not store-wide. The old test asked "have I certified
+    // anything, and have I revoked anything", so one key withdrawing hid the
+    // button while another key's endorsement was still in force, leaving no
+    // way to withdraw it from the app at all.
+    let withdrawn: HashSet<(&str, Option<&str>)> = certifications
+        .iter()
+        .filter(|c| c.by_me && c.is_revocation)
+        .map(|c| (c.user_id.as_str(), c.certifier_fingerprint.as_deref()))
+        .collect();
+    let withdrawable = certifications.iter().any(|c| {
+        c.by_me
+            && !c.is_revocation
+            && !withdrawn.contains(&(c.user_id.as_str(), c.certifier_fingerprint.as_deref()))
+    });
 
     let rows: Vec<CertificationRow> = certifications
         .iter()
@@ -1900,7 +1913,7 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
             };
             // The row confirms itself in Slint; the status line is for the
             // case the clipboard refuses, which is otherwise invisible.
-            match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_string())) {
+            match copy_to_clipboard(text.to_string()) {
                 Ok(()) => ui.set_status("Copied to the clipboard".into()),
                 Err(e) => ui.set_status(format!("Could not copy: {e}").into()),
             }
@@ -1914,7 +1927,7 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
                 return;
             };
             let text = ui.get_np_output().to_string();
-            match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+            match copy_to_clipboard(text) {
                 Ok(()) => {
                     ui.set_np_copied(true);
                     ui.set_status("Copied to the clipboard".into());
@@ -2415,24 +2428,55 @@ fn run_revoke(
             .map_err(|e| format!("Certificate unavailable: {e}"))?;
         let certifications = certify::certifications(&store, &cert).unwrap_or_default();
 
-        let mine: Vec<&Certification> = certifications
+        // Grouped by which of our keys made each certification, because a
+        // revocation only retracts a certification made by the same key. This
+        // used to sign every withdrawal with whichever key happened to sort
+        // first, so when two of our keys had certified the same person one
+        // endorsement quietly survived while the status line said it had been
+        // withdrawn. The user IDs are deduplicated too: the flat list repeated
+        // them, and each repeat produced an identical revocation packet.
+        let mut by_certifier: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for c in certifications
             .iter()
             .filter(|c| c.by_me && !c.is_revocation)
-            .collect();
-        let certifier = mine
-            .first()
-            .and_then(|c| c.certifier_fingerprint.clone())
-            .ok_or_else(|| "You have not certified this key".to_string())?;
-        let user_ids: Vec<String> = mine.iter().map(|c| c.user_id.clone()).collect();
+        {
+            let Some(fingerprint) = c.certifier_fingerprint.clone() else {
+                continue;
+            };
+            let ids = by_certifier.entry(fingerprint).or_default();
+            if !ids.contains(&c.user_id) {
+                ids.push(c.user_id.clone());
+            }
+        }
+        if by_certifier.is_empty() {
+            return Err("You have not certified this key".to_string());
+        }
 
-        revoke::revoke_certification(
-            &store, &certifier, &target, &user_ids, reason, message, password,
-        )
-        .map_err(|e| format!("Could not withdraw the certification: {e}"))?;
+        // One passphrase is collected for the whole dialog, so a set of keys
+        // with different passphrases stops at the first that will not unlock.
+        // Reporting how far it got beats reporting a flat failure over work
+        // that was partly done.
+        let total = by_certifier.len();
+        for (done, (certifier, user_ids)) in by_certifier.iter().enumerate() {
+            revoke::revoke_certification(
+                &store, certifier, &target, user_ids, reason, message, password,
+            )
+            .map_err(|e| {
+                if done == 0 {
+                    format!("Could not withdraw the certification: {e}")
+                } else {
+                    format!("Withdrew {done} of {total}; the rest failed: {e}")
+                }
+            })?;
+        }
 
         return Ok((
             target,
-            "Certification withdrawn. It stops counting a second from now.".to_string(),
+            if total == 1 {
+                "Certification withdrawn. It stops counting a second from now.".to_string()
+            } else {
+                format!("{total} certifications withdrawn, one per key that made them.")
+            },
         ));
     }
 
@@ -2515,6 +2559,39 @@ fn reload(ui: &AppWindow, state: &Shared) {
 /// because naming their type would put a `sequoia_openpgp` type in this crate
 /// and the GUI is deliberately free of them. The extra read is the cost of
 /// that boundary, and it is paid on a worker thread where nothing waits for it.
+/// Put `text` on the system clipboard.
+///
+/// One clipboard for the process, not one per click. On X11 arboard serves the
+/// selection from a window it owns, and dropping the last handle destroys that
+/// window after a single 100ms attempt to hand the contents to a clipboard
+/// manager — so a handle created and dropped inside a callback loses the text
+/// immediately on any session without one running. Both copy callbacks run on
+/// the event loop, so a thread-local is enough, and its destructor still makes
+/// the handover at exit, which is where that belongs.
+fn copy_to_clipboard(text: String) -> std::result::Result<(), String> {
+    thread_local! {
+        static CLIPBOARD: RefCell<Option<arboard::Clipboard>> = const { RefCell::new(None) };
+    }
+    CLIPBOARD.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(arboard::Clipboard::new().map_err(|e| e.to_string())?);
+        }
+        // A clipboard that has stopped working — the X server went away, say —
+        // is dropped so the next copy builds a fresh one rather than failing
+        // forever.
+        let result = slot
+            .as_mut()
+            .expect("just populated")
+            .set_text(text)
+            .map_err(|e| e.to_string());
+        if result.is_err() {
+            *slot = None;
+        }
+        result
+    })
+}
+
 fn survey_agent_and_secrets(ui: &AppWindow, state: &Shared, store: std::sync::Arc<Store>) {
     let (ui_weak, state) = (ui.as_weak(), state.clone());
     std::thread::spawn(move || {

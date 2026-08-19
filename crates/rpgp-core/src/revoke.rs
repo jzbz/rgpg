@@ -484,6 +484,88 @@ mod tests {
     /// Withdraw, then change your mind again. The revocation is dated a
     /// second past the certification; a re-certification has to be dated
     /// past the revocation in turn, or it is born already superseded.
+    /// A revocation retracts only certifications made by the same key. The
+    /// GUI used to withdraw with whichever of the user's keys sorted first,
+    /// leaving the other key's endorsement standing while reporting success —
+    /// this pins the core semantics that made that a silent failure.
+    #[test]
+    fn a_revocation_only_retracts_its_own_certifiers_work() {
+        let (_dir, store) = scratch();
+        let a = generate(&KeyGenRequest::new("A <a@example.org>"))
+            .unwrap()
+            .cert;
+        let b = generate(&KeyGenRequest::new("B <b@example.org>"))
+            .unwrap()
+            .cert;
+        let them = generate(&KeyGenRequest::new("Them <them@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&a).unwrap();
+        store.insert_secret(&b).unwrap();
+        store.insert(&them).unwrap();
+
+        let user_id = "Them <them@example.org>".to_string();
+        for certifier in [&a, &b] {
+            let mut request = CertifyRequest::new(
+                certifier.fingerprint().to_hex(),
+                them.fingerprint().to_hex(),
+            );
+            request.user_ids = vec![user_id.clone()];
+            certify(&store, &request).unwrap();
+        }
+
+        // Authentication under exactly one root, so each key's own opinion can
+        // be read separately.
+        let under = |root: &Cert| {
+            let certs = store.certs().unwrap();
+            wot::authenticate_all(&certs, &[root.fingerprint().to_hex()])
+                .get(&them.fingerprint().to_hex().to_uppercase())
+                .copied()
+                .unwrap_or_default()
+        };
+        assert_eq!(under(&a), crate::Authentication::Full);
+        assert_eq!(under(&b), crate::Authentication::Full);
+
+        // A withdraws. B's endorsement is not A's to retract.
+        revoke_certification(
+            &store,
+            &a.fingerprint().to_hex(),
+            &them.fingerprint().to_hex(),
+            std::slice::from_ref(&user_id),
+            Reason::Superseded,
+            "",
+            None,
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1300));
+
+        assert_eq!(
+            under(&a),
+            crate::Authentication::Unknown,
+            "A withdrew its own"
+        );
+        assert_eq!(
+            under(&b),
+            crate::Authentication::Full,
+            "A's revocation must not retract B's certification"
+        );
+
+        // Only withdrawing with B too clears it — which is what the GUI now
+        // does, one call per certifier.
+        revoke_certification(
+            &store,
+            &b.fingerprint().to_hex(),
+            &them.fingerprint().to_hex(),
+            &[user_id],
+            Reason::Superseded,
+            "",
+            None,
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1300));
+        assert_eq!(under(&b), crate::Authentication::Unknown);
+    }
+
     #[test]
     fn recertifying_after_a_withdrawal_takes_effect() {
         let (_dir, store) = scratch();

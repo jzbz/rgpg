@@ -193,172 +193,195 @@ export component SignEncryptDialog inherits DialogShell {
     VerticalLayout {
         spacing: Theme.s4;
 
-        FilePick {
-            label: "File";
-            path: root.input-path;
-            enabled: !root.busy;
-            pick => { root.pick-input(); }
-        }
+        // The form scrolls; the footer below does not. Every row here is a
+        // fixed height — the file slot, the 168px recipients box, the fields,
+        // the signer select — so the content is 671px tall against a card that
+        // the window's own minimum (860x520) clamps to 488px. Slint does not
+        // shrink explicitly-sized children, so Cancel and Run fell off the
+        // bottom: not merely clipped but absent from the item tree, with no
+        // keyboard path to either.
+        //
+        // min-height 0 lets the card take height away from the form instead of
+        // from the footer; preferred-height keeps the dialog its natural size
+        // whenever the window is tall enough, which is the usual case.
+        ScrollView {
+            min-height: 0px;
+            preferred-height: form.preferred-height;
+            vertical-stretch: 1;
+            viewport-width: self.visible-width;
+            viewport-height: max(self.visible-height, form.preferred-height);
 
-        HorizontalLayout {
-            spacing: Theme.s5;
-            alignment: start;
-            // Unticking clears what the section collected. The fields below
-            // are conditional and are destroyed with the section, but the
-            // properties they wrote into are not — so a password typed, hidden
-            // and forgotten would otherwise still enable Run and still be
-            // used, from a field the user can no longer see.
-            Check {
-                text: "Encrypt";
-                checked: root.want-encrypt;
+            form := VerticalLayout {
+                spacing: Theme.s4;
+
+            FilePick {
+                label: "File";
+                path: root.input-path;
                 enabled: !root.busy;
-                toggled => {
-                    root.want-encrypt = !root.want-encrypt;
-                    if !root.want-encrypt { root.secret = ""; }
-                }
+                pick => { root.pick-input(); }
             }
-            Check {
-                text: "Sign";
-                checked: root.want-sign;
-                enabled: !root.busy && root.signers.length > 0;
-                toggled => {
-                    root.want-sign = !root.want-sign;
-                    if !root.want-sign { root.password = ""; }
-                }
-            }
-        }
-
-        if root.want-encrypt: VerticalLayout {
-            spacing: 6px;
 
             HorizontalLayout {
-                Text {
-                    text: "Recipients";
-                    color: Theme.text-dim;
-                    font-size: Theme.t-sm;
-                    horizontal-stretch: 1;
+                spacing: Theme.s5;
+                alignment: start;
+                // Unticking clears what the section collected. The fields below
+                // are conditional and are destroyed with the section, but the
+                // properties they wrote into are not — so a password typed, hidden
+                // and forgotten would otherwise still enable Run and still be
+                // used, from a field the user can no longer see.
+                Check {
+                    text: "Encrypt";
+                    checked: root.want-encrypt;
+                    enabled: !root.busy;
+                    toggled => {
+                        root.want-encrypt = !root.want-encrypt;
+                        if !root.want-encrypt { root.secret = ""; }
+                    }
                 }
-                Text {
-                    text: root.chosen-recipients == 0
-                        ? "none selected"
-                        : "\{root.chosen-recipients} selected";
-                    color: root.chosen-recipients == 0 ? Theme.warn : Theme.text-dim;
-                    font-size: Theme.t-sm;
+                Check {
+                    text: "Sign";
+                    checked: root.want-sign;
+                    enabled: !root.busy && root.signers.length > 0;
+                    toggled => {
+                        root.want-sign = !root.want-sign;
+                        if !root.want-sign { root.password = ""; }
+                    }
                 }
             }
 
-            Rectangle {
-                height: 168px;
-                background: Theme.surface-sunken;
-                border-radius: Theme.r-sm;
-                border-width: 1px;
-                border-color: Theme.border;
-                clip: true;
+            if root.want-encrypt: VerticalLayout {
+                spacing: 6px;
 
-                if root.recipients.length == 0: Text {
-                    text: "No certificate in the store can receive encrypted mail.";
-                    color: Theme.text-faint;
-                    font-size: Theme.t-sm;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    wrap: word-wrap;
-                    width: parent.width - 2 * Theme.s4;
+                HorizontalLayout {
+                    Text {
+                        text: "Recipients";
+                        color: Theme.text-dim;
+                        font-size: Theme.t-sm;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: root.chosen-recipients == 0
+                            ? "none selected"
+                            : "\{root.chosen-recipients} selected";
+                        color: root.chosen-recipients == 0 ? Theme.warn : Theme.text-dim;
+                        font-size: Theme.t-sm;
+                    }
                 }
 
-                if root.recipients.length > 0: ListView {
-                    for entry[index] in root.recipients: Rectangle {
-                        height: 42px;
-                        background: pick.has-hover ? Theme.hover : transparent;
+                Rectangle {
+                    height: 168px;
+                    background: Theme.surface-sunken;
+                    border-radius: Theme.r-sm;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                    clip: true;
 
-                        HorizontalLayout {
-                            padding-left: Theme.s3;
-                            padding-right: Theme.s3;
-                            spacing: Theme.s3;
+                    if root.recipients.length == 0: Text {
+                        text: "No certificate in the store can receive encrypted mail.";
+                        color: Theme.text-faint;
+                        font-size: Theme.t-sm;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                        width: parent.width - 2 * Theme.s4;
+                    }
 
-                            Rectangle {
-                                width: 17px;
-                                height: 17px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 5px;
-                                background: entry.selected ? Theme.accent : Theme.surface;
-                                border-width: 1px;
-                                border-color: entry.selected ? Theme.accent : Theme.border-strong;
-                                if entry.selected: Icon {
-                                    glyph: Icons.check;
-                                    tint: Theme.accent-ink;
-                                    width: 12px;
-                                    height: 12px;
+                    if root.recipients.length > 0: ListView {
+                        for entry[index] in root.recipients: Rectangle {
+                            height: 42px;
+                            background: pick.has-hover ? Theme.hover : transparent;
+
+                            HorizontalLayout {
+                                padding-left: Theme.s3;
+                                padding-right: Theme.s3;
+                                spacing: Theme.s3;
+
+                                Rectangle {
+                                    width: 17px;
+                                    height: 17px;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 5px;
+                                    background: entry.selected ? Theme.accent : Theme.surface;
+                                    border-width: 1px;
+                                    border-color: entry.selected ? Theme.accent : Theme.border-strong;
+                                    if entry.selected: Icon {
+                                        glyph: Icons.check;
+                                        tint: Theme.accent-ink;
+                                        width: 12px;
+                                        height: 12px;
+                                    }
+                                }
+
+                                Monogram {
+                                    initials: entry.initials;
+                                    tint: Theme.monograms[entry.tint-index];
+                                    size: 26px;
+                                    y: (parent.height - self.height) / 2;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+                                    Text {
+                                        text: entry.label;
+                                        color: Theme.text;
+                                        font-size: Theme.t-md;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: entry.sublabel;
+                                        color: Theme.text-faint;
+                                        font-size: Theme.t-xs;
+                                        overflow: elide;
+                                    }
                                 }
                             }
 
-                            Monogram {
-                                initials: entry.initials;
-                                tint: Theme.monograms[entry.tint-index];
-                                size: 26px;
-                                y: (parent.height - self.height) / 2;
+                            pick := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.toggle-recipient(index); }
                             }
-
-                            VerticalLayout {
-                                alignment: center;
-                                horizontal-stretch: 1;
-                                Text {
-                                    text: entry.label;
-                                    color: Theme.text;
-                                    font-size: Theme.t-md;
-                                    overflow: elide;
-                                }
-                                Text {
-                                    text: entry.sublabel;
-                                    color: Theme.text-faint;
-                                    font-size: Theme.t-xs;
-                                    overflow: elide;
-                                }
-                            }
-                        }
-
-                        pick := TouchArea {
-                            mouse-cursor: MouseCursor.pointer;
-                            clicked => { root.toggle-recipient(index); }
                         }
                     }
                 }
             }
-        }
 
-        if root.want-encrypt: Field {
-            placeholder: "Or a password — anyone with it can open the file";
-            secret: true;
-            enabled: !root.busy;
-            edited(text) => { root.secret = text; }
-        }
-
-        if root.want-sign && root.signers.length > 0: VerticalLayout {
-            spacing: 6px;
-            Text {
-                text: "Sign as";
-                color: Theme.text-dim;
-                font-size: Theme.t-sm;
-            }
-            Select {
-                model: root.signers;
+            if root.want-encrypt: Field {
+                placeholder: "Or a password — anyone with it can open the file";
+                secret: true;
                 enabled: !root.busy;
-                current: root.signer-index;
-                changed(index) => { root.signer-index = index; }
+                edited(text) => { root.secret = text; }
             }
-        }
 
-        if root.want-sign: Field {
-            placeholder: "Passphrase for the signing key (if any)";
-            secret: true;
-            enabled: !root.busy;
-            edited(text) => { root.password = text; }
-        }
+            if root.want-sign && root.signers.length > 0: VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Sign as";
+                    color: Theme.text-dim;
+                    font-size: Theme.t-sm;
+                }
+                Select {
+                    model: root.signers;
+                    enabled: !root.busy;
+                    current: root.signer-index;
+                    changed(index) => { root.signer-index = index; }
+                }
+            }
 
-        if root.input-path != "": Text {
-            text: "Writes " + (root.want-encrypt ? root.output-encrypt : root.output-sign);
-            color: Theme.text-faint;
-            font-size: Theme.t-sm;
-            overflow: elide;
+            if root.want-sign: Field {
+                placeholder: "Passphrase for the signing key (if any)";
+                secret: true;
+                enabled: !root.busy;
+                edited(text) => { root.password = text; }
+            }
+
+            if root.input-path != "": Text {
+                text: "Writes " + (root.want-encrypt ? root.output-encrypt : root.output-sign);
+                color: Theme.text-faint;
+                font-size: Theme.t-sm;
+                overflow: elide;
+            }
+            }
         }
 
         Divider { }
