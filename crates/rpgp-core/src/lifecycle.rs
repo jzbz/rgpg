@@ -45,13 +45,41 @@ pub fn set_expiry(
         .map_err(|_| Error::invalid("this certificate is not valid under the standard policy"))?;
 
     let expiration = expires_in.map(|d| SystemTime::now() + d);
-    // Lives on the primary key's amalgamation, not on ValidCert: expiry is a
-    // property of the primary key's binding, and the call also reissues the
-    // subkey bindings so they do not outlive it.
-    let signatures = valid
+
+    // The primary key first: a direct-key signature plus one self-signature
+    // per user ID, which is where a primary key's expiry actually lives.
+    let mut signatures = valid
         .primary_key()
         .set_expiration_time(&mut signer, expiration)
         .map_err(Error::OpenPgp)?;
+
+    // Then every subkey, separately. This is not optional and it is not done
+    // for us: sequoia's primary-key call touches only the primary key's own
+    // signatures, and each subkey carries its own expiry in its own binding
+    // signature. Keys generated here give primary and subkeys the same
+    // lifetime, so without this an extended certificate has a primary key
+    // that lives on and signing and encryption subkeys that die on the
+    // original date — the user believes they extended it and a month later
+    // nobody can encrypt to them.
+    //
+    // A signing-capable subkey has to countersign its own new binding (the
+    // primary key binding signature, or "back-sig"), so it needs its own
+    // signer. Encryption-only subkeys cannot sign and must be passed none.
+    // Revoked subkeys are left alone: a new expiry on a revoked key is noise.
+    for ka in valid.keys().subkeys().secret().revoked(false) {
+        let mut subkey_signer = if ka.for_signing() {
+            Some(crate::secret::keypair(ka.key().clone(), password)?)
+        } else {
+            None
+        };
+        let subkey_signer = subkey_signer
+            .as_mut()
+            .map(|s| s as &mut dyn sequoia_openpgp::crypto::Signer);
+        signatures.extend(
+            ka.set_expiration_time(&mut signer, subkey_signer, expiration)
+                .map_err(Error::OpenPgp)?,
+        );
+    }
 
     store_both(store, cert, signatures)
 }
@@ -143,11 +171,15 @@ pub fn revoke_user_id(
 /// Retract a single subkey, leaving the rest of the certificate intact.
 ///
 /// Useful when one subkey's secret is exposed but the primary key is not: the
-/// identity survives and only the compromised part is withdrawn.
+/// identity survives and only the compromised part is withdrawn. Which is why
+/// the reason is a parameter and not hardcoded: "exposed" is a hard
+/// revocation, and a soft one would leave whoever holds the subkey able to keep
+/// making signatures that verify.
 pub fn revoke_subkey(
     store: &Store,
     fingerprint: &str,
     subkey_fingerprint: &str,
+    reason: crate::revoke::Reason,
     message: &str,
     password: Option<&str>,
 ) -> Result<Cert> {
@@ -165,7 +197,7 @@ pub fn revoke_subkey(
 
     let mut signer = unlock_primary(&cert, password)?;
     let signature = SubkeyRevocationBuilder::new()
-        .set_reason_for_revocation(ReasonForRevocation::KeyRetired, message.as_bytes())?
+        .set_reason_for_revocation(reason.to_openpgp(), message.as_bytes())?
         .build(&mut signer, &cert, &subkey, None)?;
 
     store_both(store, cert, vec![signature])
@@ -204,6 +236,7 @@ mod tests {
     use super::*;
     use crate::cert::Validity;
     use crate::keygen::{KeyGenRequest, generate};
+    use crate::revoke::Reason;
     use crate::{CertSummary, cert};
 
     fn scratch() -> (tempfile::TempDir, Store, Cert) {
@@ -246,6 +279,68 @@ mod tests {
             CertSummary::from_cert(&store.secret_cert(&fingerprint).unwrap())
                 .expires
                 .is_none()
+        );
+    }
+
+    /// The subkeys, not just the primary. Sequoia's primary-key call leaves
+    /// subkey bindings untouched, and the older tests only ever looked at
+    /// `CertSummary::expires`, which reads the primary — so a certificate
+    /// whose subkeys had all lapsed passed them.
+    #[test]
+    fn extending_expiry_extends_every_subkey() {
+        use sequoia_openpgp::policy::StandardPolicy;
+        let policy = StandardPolicy::new();
+
+        // Generated with a one-second lifetime, so primary AND subkeys lapse
+        // together — the way a real key does years in. Shortening via
+        // set_expiry would not do: it only ever moved the primary, which is
+        // the very bug, so the subkeys would never have expired.
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("certs.d"), dir.path().join("secrets")).unwrap();
+        let mut request = KeyGenRequest::new("Alice <alice@example.org>");
+        request.validity = Some(Duration::from_secs(1));
+        let cert = generate(&request).unwrap().cert;
+        store.insert_secret(&cert).unwrap();
+        let fingerprint = cert.fingerprint().to_hex();
+        std::thread::sleep(Duration::from_millis(1500));
+
+        // Precondition: everything really has lapsed.
+        let lapsed = cert.with_policy(&policy, None).unwrap();
+        assert!(lapsed.keys().subkeys().all(|ka| ka.alive().is_err()));
+
+        let year = Duration::from_secs(365 * 24 * 60 * 60);
+        let revived = set_expiry(&store, &fingerprint, Some(year), None).unwrap();
+        let valid = revived.with_policy(&policy, None).unwrap();
+
+        let subkeys: Vec<_> = valid.keys().subkeys().collect();
+        assert!(!subkeys.is_empty(), "the generated key has subkeys");
+        for ka in &subkeys {
+            assert!(
+                ka.alive().is_ok(),
+                "subkey {} is still expired after the certificate was extended",
+                ka.key().fingerprint()
+            );
+        }
+        // What the user actually needs to still work.
+        assert!(
+            valid
+                .keys()
+                .subkeys()
+                .alive()
+                .for_signing()
+                .next()
+                .is_some(),
+            "no live signing subkey"
+        );
+        assert!(
+            valid
+                .keys()
+                .subkeys()
+                .alive()
+                .for_transport_encryption()
+                .next()
+                .is_some(),
+            "no live encryption subkey"
         );
     }
 
@@ -293,7 +388,15 @@ mod tests {
         assert!(before.len() > 1, "the test key should have several subkeys");
         let victim = before[0].fingerprint.clone();
 
-        let updated = revoke_subkey(&store, &fingerprint, &victim, "secret exposed", None).unwrap();
+        let updated = revoke_subkey(
+            &store,
+            &fingerprint,
+            &victim,
+            Reason::Compromised,
+            "secret exposed",
+            None,
+        )
+        .unwrap();
 
         let after = cert::subkeys(&updated);
         assert!(
@@ -313,7 +416,17 @@ mod tests {
         // The certificate itself is still usable.
         assert_eq!(CertSummary::from_cert(&updated).validity, Validity::Valid);
 
-        assert!(revoke_subkey(&store, &fingerprint, &fingerprint, "", None).is_err());
+        assert!(
+            revoke_subkey(
+                &store,
+                &fingerprint,
+                &fingerprint,
+                Reason::Retired,
+                "",
+                None
+            )
+            .is_err()
+        );
     }
 
     #[test]

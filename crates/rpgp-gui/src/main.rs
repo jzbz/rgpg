@@ -1627,7 +1627,7 @@ fn wire_lifecycle(ui: &AppWindow, state: &Shared) {
 
     ui.on_lifecycle_run({
         let (ui_weak, state) = (ui.as_weak(), state.clone());
-        move |mode, expiry, value, password| {
+        move |mode, expiry, value, password, reason| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
@@ -1637,18 +1637,17 @@ fn wire_lifecycle(ui: &AppWindow, state: &Shared) {
             ui.set_status("Working…".into());
 
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
-            let (expiry, value, password) =
-                (expiry.to_string(), value.to_string(), password.to_string());
+            let input = LifecycleInput {
+                mode,
+                fingerprint,
+                target,
+                expiry: expiry.to_string(),
+                value: value.to_string(),
+                password: password.to_string(),
+                reason,
+            };
             std::thread::spawn(move || {
-                let outcome = run_lifecycle(
-                    &state,
-                    mode,
-                    &fingerprint,
-                    &target,
-                    &expiry,
-                    &value,
-                    &password,
-                );
+                let outcome = run_lifecycle(&state, &input);
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = ui_weak.upgrade() else {
                         return;
@@ -1669,19 +1668,43 @@ fn wire_lifecycle(ui: &AppWindow, state: &Shared) {
     });
 }
 
-fn run_lifecycle(
-    state: &Shared,
+/// Everything the lifecycle dialog hands over, as one value: it carries a
+/// mode selector plus the union of every mode's inputs, and the worker reads
+/// the ones its mode needs.
+struct LifecycleInput {
     mode: i32,
-    fingerprint: &str,
-    target: &str,
-    expiry: &str,
-    value: &str,
-    password: &str,
-) -> Result<(String, String), String> {
+    fingerprint: String,
+    /// The user ID or subkey fingerprint a revoke mode is about.
+    target: String,
+    /// Index into the expiry choices, as the dialog reports it.
+    expiry: String,
+    value: String,
+    password: String,
+    /// Index into Reason::ALL; only mode 4 reads it.
+    reason: i32,
+}
+
+fn run_lifecycle(state: &Shared, input: &LifecycleInput) -> Result<(String, String), String> {
+    let LifecycleInput {
+        mode,
+        fingerprint,
+        target,
+        expiry,
+        value,
+        password,
+        reason,
+    } = input;
+    let (mode, reason) = (*mode, *reason);
+    let (fingerprint, target, expiry, value) = (
+        fingerprint.as_str(),
+        target.as_str(),
+        expiry.as_str(),
+        value.as_str(),
+    );
     // Snapshot what is needed and release the lock: everything below is I/O,
     // and a card PIN prompt can hold it for a minute while the UI waits.
     let store = state.lock().unwrap().store.clone();
-    let password = Some(password).filter(|p| !p.is_empty());
+    let password = Some(password.as_str()).filter(|p| !p.is_empty());
 
     match mode {
         0 => {
@@ -1714,8 +1737,15 @@ fn run_lifecycle(
             ))
         }
         4 => {
-            lifecycle::revoke_subkey(&store, fingerprint, target, value, password)
-                .map_err(|e| format!("Could not revoke the subkey: {e}"))?;
+            lifecycle::revoke_subkey(
+                &store,
+                fingerprint,
+                target,
+                Reason::from_index(reason),
+                value,
+                password,
+            )
+            .map_err(|e| format!("Could not revoke the subkey: {e}"))?;
             Ok((
                 "Subkey revoked. Publish the key so others stop using it.".to_string(),
                 fingerprint.to_string(),

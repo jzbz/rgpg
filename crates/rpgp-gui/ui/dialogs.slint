@@ -734,20 +734,26 @@ export component RevokeDialog inherits DialogShell {
                 color: Theme.text-dim;
                 font-size: Theme.t-sm;
             }
+            // Mirrors Reason::ALL in rpgp-core, soft reasons first. The default
+            // used to be "No reason given", which reads as neutral and is not:
+            // OpenPGP treats it as a hard revocation, the same as a compromise.
             Select {
                 model: [
-                    "No reason given",
+                    "No longer used",
                     "Replaced by a newer key",
                     "Secret key may be compromised",
-                    "No longer used",
+                    "No reason given (treated as compromised)",
                 ];
                 enabled: !root.busy;
                 current: root.reason;
                 changed(index) => { root.reason = index; }
             }
-            if root.reason == 2: Text {
-                text: "A compromise is a hard revocation: signatures this key made in the "
-                    + "past stop counting too.";
+            // The two hard reasons are the last two, by construction of
+            // Reason::ALL, so this stays right if their labels change.
+            if root.reason >= 2: Text {
+                text: "This is a hard revocation: signatures this key made in the past "
+                    + "stop counting too. Choose \"No longer used\" or \"Replaced\" "
+                    + "if the key was never exposed.";
                 color: Theme.warn;
                 font-size: Theme.t-sm;
                 wrap: word-wrap;
@@ -1406,11 +1412,14 @@ export component LifecycleDialog inherits DialogShell {
     in property <int> mode;
     in property <string> target;
     in property <bool> busy;
-    callback run(int, string, string, string);
+    /// mode, expiry-index, value, password, reason-index. The reason is
+    /// meaningful for mode 4 (revoke a subkey) only.
+    callback run(int, string, string, string, int);
 
     property <string> value;
     property <string> password;
     property <int> expiry: 0;
+    property <int> reason: 0;
 
     title: root.mode == 0 ? "Change expiry"
         : root.mode == 1 ? "Add a user ID"
@@ -1458,6 +1467,34 @@ export component LifecycleDialog inherits DialogShell {
             edited(text) => { root.value = text; }
         }
 
+        // Revoking a subkey is a revocation, and it needs a reason for the
+        // same reason a whole-key revocation does: whether the subkey was
+        // exposed decides whether its past signatures still count. Same
+        // model as RevokeDialog, mirroring Reason::ALL.
+        if root.mode == 4: Select {
+            model: [
+                "No longer used",
+                "Replaced by a newer key",
+                "Secret key may be compromised",
+                "No reason given (treated as compromised)",
+            ];
+            enabled: !root.busy;
+            current: root.reason;
+            changed(index) => { root.reason = index; }
+        }
+        if root.mode == 4 && root.reason >= 2: Text {
+            text: "This is a hard revocation: signatures this subkey made in the past "
+                + "stop counting too.";
+            color: Theme.warn;
+            font-size: Theme.t-sm;
+            wrap: word-wrap;
+        }
+        if root.mode == 4: Field {
+            placeholder: "Note for whoever reads this later (optional)";
+            enabled: !root.busy;
+            edited(text) => { root.value = text; }
+        }
+
         if root.mode != 3: Field {
             placeholder: "Passphrase for the key (if any)";
             secret: true;
@@ -1493,7 +1530,7 @@ export component LifecycleDialog inherits DialogShell {
                 variant: root.mode >= 2 ? Variant.danger : Variant.primary;
                 enabled: !root.busy && (root.mode != 1 || root.value != "");
                 clicked => {
-                    root.run(root.mode, "\{root.expiry}", root.value, root.password);
+                    root.run(root.mode, "\{root.expiry}", root.value, root.password, root.reason);
                 }
             }
         }

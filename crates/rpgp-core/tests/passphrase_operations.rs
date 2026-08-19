@@ -102,6 +102,7 @@ fn revoke_a_subkey() {
             store,
             &cert.fingerprint().to_hex(),
             &subkey,
+            revoke::Reason::Retired,
             "rotating",
             Some(PASSPHRASE),
         )

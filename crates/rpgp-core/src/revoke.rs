@@ -27,40 +27,54 @@ use zeroize::Zeroizing;
 /// OpenPGP's list is longer, but the extra codes are either user-ID specific or
 /// private, and offering a user a choice they cannot evaluate is worse than
 /// offering four they can.
+///
+/// The ordering, and the default, are load-bearing. "No reason given" is not
+/// the neutral choice it sounds like: OpenPGP treats an unspecified reason as
+/// a *hard* revocation, the same as a compromise, invalidating every signature
+/// the key ever made. So the two soft reasons come first, the default is soft,
+/// and the two hard ones sit together at the end where the dialogs can warn on
+/// them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Reason {
+    /// The key is simply out of service. Soft: past signatures stand.
     #[default]
-    Unspecified,
-    /// A replacement key has been issued.
-    Superseded,
-    /// The secret key may be in someone else's hands. This is a *hard*
-    /// revocation: it invalidates signatures made in the past as well, because
-    /// there is no way to know which of them were really yours.
-    Compromised,
-    /// The key is simply out of service.
     Retired,
+    /// A replacement key has been issued. Soft.
+    Superseded,
+    /// The secret key may be in someone else's hands. Hard: it invalidates
+    /// signatures made in the past as well, because there is no way to know
+    /// which of them were really yours.
+    Compromised,
+    /// No reason. Hard, per the standard — the reader has no basis to trust
+    /// anything the key did, so nothing it did is trusted.
+    Unspecified,
 }
 
 impl Reason {
+    /// Dialog order. The two hard reasons are last, and adjacent, so a dialog
+    /// can warn on `index >= 2` and stay right if the labels change.
     pub const ALL: [Reason; 4] = [
-        Reason::Unspecified,
+        Reason::Retired,
         Reason::Superseded,
         Reason::Compromised,
-        Reason::Retired,
+        Reason::Unspecified,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
-            Reason::Unspecified => "No reason given",
+            Reason::Retired => "No longer used",
             Reason::Superseded => "Replaced by a newer key",
             Reason::Compromised => "Secret key may be compromised",
-            Reason::Retired => "No longer used",
+            Reason::Unspecified => "No reason given (treated as compromised)",
         }
     }
 
     /// A hard revocation also invalidates past signatures.
+    ///
+    /// Derived from sequoia's own classification rather than restated, so this
+    /// cannot disagree with what the verifier will actually do.
     pub fn is_hard(self) -> bool {
-        matches!(self, Reason::Compromised)
+        self.to_openpgp().revocation_type() == sequoia_openpgp::types::RevocationType::Hard
     }
 
     pub fn from_index(index: i32) -> Self {
@@ -70,7 +84,7 @@ impl Reason {
             .unwrap_or_default()
     }
 
-    fn to_openpgp(self) -> ReasonForRevocation {
+    pub(crate) fn to_openpgp(self) -> ReasonForRevocation {
         match self {
             Reason::Unspecified => ReasonForRevocation::Unspecified,
             Reason::Superseded => ReasonForRevocation::KeySuperseded,
@@ -353,6 +367,38 @@ mod tests {
             CertSummary::from_cert(&store.secret_cert(&fingerprint).unwrap()).validity,
             Validity::Revoked
         );
+    }
+
+    /// "No reason given" is a hard revocation in OpenPGP, and it used to be
+    /// the default. Pinned here so neither the default nor the classification
+    /// can drift back without a test noticing.
+    #[test]
+    fn unspecified_is_hard_and_the_default_is_soft() {
+        assert!(
+            Reason::Unspecified.is_hard(),
+            "the standard treats no-reason as compromise"
+        );
+        assert!(Reason::Compromised.is_hard());
+        assert!(!Reason::Retired.is_hard());
+        assert!(!Reason::Superseded.is_hard());
+
+        assert!(
+            !Reason::default().is_hard(),
+            "the default must be a soft revocation"
+        );
+        assert!(
+            !Reason::from_index(0).is_hard(),
+            "the dialog's first entry must be soft"
+        );
+        assert!(
+            !Reason::from_index(99).is_hard(),
+            "an out-of-range index must not go hard"
+        );
+
+        // The two hard reasons are the last two of ALL: the dialogs warn on
+        // index >= 2 and rely on this.
+        let hard: Vec<bool> = Reason::ALL.iter().map(|r| r.is_hard()).collect();
+        assert_eq!(hard, [false, false, true, true]);
     }
 
     #[test]

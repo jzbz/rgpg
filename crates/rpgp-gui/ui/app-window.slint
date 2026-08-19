@@ -298,7 +298,7 @@ export component AppWindow inherits Window {
     callback open-add-user-id();
     callback open-revoke-user-id(string);
     callback open-revoke-subkey(string);
-    callback lifecycle-run(int, string, string, string);
+    callback lifecycle-run(int, string, string, string, int);
 
     callback open-notepad();
     callback np-run(int, string, int, string, string);
@@ -1011,8 +1011,8 @@ export component AppWindow inherits Window {
         mode: root.lifecycle-mode;
         target: root.lifecycle-target;
         dismissed => { root.lifecycle-open = false; }
-        run(mode, expiry, value, password) => {
-            root.lifecycle-run(mode, expiry, value, password);
+        run(mode, expiry, value, password, reason) => {
+            root.lifecycle-run(mode, expiry, value, password, reason);
         }
     }
 
