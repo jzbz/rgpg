@@ -173,7 +173,9 @@ impl Store {
 
     /// Where the revocation certificate for `fingerprint` lives.
     pub fn revocation_path(&self, fingerprint: &str) -> PathBuf {
-        self.revocations_dir.join(format!("{fingerprint}.rev"))
+        // Normalised like `secret_path`; same reasoning.
+        self.revocations_dir
+            .join(format!("{}.rev", fingerprint.to_uppercase()))
     }
 
     pub fn has_revocation(&self, fingerprint: &str) -> bool {
@@ -480,7 +482,15 @@ impl Store {
     }
 
     fn secret_path(&self, fingerprint: &str) -> PathBuf {
-        self.secrets_dir.join(format!("{fingerprint}.pgp"))
+        // Normalised, because these files are named from
+        // `Fingerprint::to_hex`, which is uppercase, while callers pass
+        // whatever they were given. A lowercase fingerprint used to miss the
+        // file entirely — and since `has_secret` is this same lookup, it made
+        // `delete` believe there was no secret key, skip the confirmation it
+        // exists to enforce, remove the public half and orphan the secret on
+        // disk. `cert_path` normalises for the same reason, the other way.
+        self.secrets_dir
+            .join(format!("{}.pgp", fingerprint.to_uppercase()))
     }
 }
 
@@ -1165,6 +1175,55 @@ mod tests {
             1,
             "the publishable one should be there"
         );
+    }
+
+    /// Fingerprints arrive in whatever case the caller had. The files are
+    /// named in one case, so a mismatch used to make `has_secret` say no —
+    /// which let `delete` skip the confirmation guarding a secret key, take
+    /// the public half, and leave the secret behind.
+    #[test]
+    fn a_lowercase_fingerprint_finds_the_same_files() {
+        let (_dir, store) = scratch();
+        let generated = crate::keygen::generate(&crate::keygen::KeyGenRequest::new(
+            "Alice <alice@example.org>",
+        ))
+        .unwrap();
+        store.insert_secret(&generated.cert).unwrap();
+        let fingerprint = generated.cert.fingerprint().to_hex();
+        let lower = fingerprint.to_lowercase();
+        assert_ne!(
+            lower, fingerprint,
+            "a hex fingerprint has letters to differ in"
+        );
+        store
+            .save_revocation(
+                &lower,
+                &crate::revoke::armor(&generated.revocation).unwrap(),
+            )
+            .unwrap();
+
+        assert!(
+            store.has_secret(&lower),
+            "the secret key must be found either way"
+        );
+        assert!(store.secret_cert(&lower).is_ok());
+        assert!(
+            store.has_revocation(&fingerprint),
+            "written lowercase, found uppercase"
+        );
+
+        // The guard must fire for a lowercase fingerprint too, and nothing
+        // may have been removed when it does.
+        assert!(store.delete(&lower, false).is_err());
+        assert!(
+            store.has_secret(&fingerprint),
+            "the secret survived the refusal"
+        );
+        assert_eq!(store.reopen().unwrap().certs().unwrap().len(), 1);
+
+        store.delete(&lower, true).unwrap();
+        assert!(!store.has_secret(&fingerprint), "no orphaned secret key");
+        assert!(store.reopen().unwrap().certs().unwrap().is_empty());
     }
 
     /// Deletion, and the reopen it requires to be visible.

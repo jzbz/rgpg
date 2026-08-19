@@ -173,6 +173,35 @@ type Shared = Arc<Mutex<State>>;
 /// Wayland compositor finds the icon for this window.
 const APP_ID: &str = "app.rpgp.rpgp";
 
+/// Clears the busy flag if a worker thread panics.
+///
+/// Every long operation runs on a worker that sets `busy` before starting and
+/// clears it from the completion closure it posts back. A panic never reaches
+/// that closure, so `busy` stayed set and every control in the window stayed
+/// disabled until the app was restarted — a crash in one operation taking the
+/// whole application with it.
+///
+/// Drop runs during unwinding, which is what lets this catch what an early
+/// return could not. It deliberately does nothing on the normal path: the
+/// completion closure is the one that should clear the flag, and say what
+/// happened while doing so.
+struct BusyGuard(slint::Weak<AppWindow>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let ui_weak = self.0.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_busy(false);
+                ui.set_status("That operation failed unexpectedly. Nothing was changed.".into());
+            }
+        });
+    }
+}
+
 /// Set on the restarted process so the software fallback can only happen once.
 const FALLBACK_GUARD: &str = "RPGP_SOFTWARE_FALLBACK";
 
@@ -613,6 +642,7 @@ fn wire_keygen(ui: &AppWindow, state: &Shared) {
             // finished certificate back through the event loop.
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
             std::thread::spawn(move || {
+                let _busy = BusyGuard(ui_weak.clone());
                 let generated = keygen::generate(&request);
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = ui_weak.upgrade() else {
@@ -782,6 +812,7 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
             let (password, secret) = (password.to_string(), secret.to_string());
             std::thread::spawn(move || {
+                let _busy = BusyGuard(ui_weak.clone());
                 let outcome =
                     run_sign_encrypt(&state, encrypt, sign, signer_index, &password, &secret);
                 let _ = slint::invoke_from_event_loop(move || {
@@ -1037,6 +1068,7 @@ fn wire_decrypt_verify(ui: &AppWindow, state: &Shared) {
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
             let password = password.to_string();
             std::thread::spawn(move || {
+                let _busy = BusyGuard(ui_weak.clone());
                 let outcome = run_decrypt_verify(&state, &password);
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = ui_weak.upgrade() else {
@@ -1229,6 +1261,7 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
             let password = password.to_string();
             std::thread::spawn(move || {
+                let _busy = BusyGuard(ui_weak.clone());
                 let outcome = run_certify(
                     &state,
                     certifier_index,
@@ -1477,6 +1510,7 @@ fn wire_lookup(ui: &AppWindow, state: &Shared) {
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
             let query = query.to_string();
             std::thread::spawn(move || {
+                let _busy = BusyGuard(ui_weak.clone());
                 // Off the UI thread: this is a network round trip that can sit
                 // on a DNS timeout for seconds.
                 let outcome = rpgp_core::keyserver::lookup(&query);
@@ -1647,6 +1681,7 @@ fn wire_lifecycle(ui: &AppWindow, state: &Shared) {
                 reason,
             };
             std::thread::spawn(move || {
+                let _busy = BusyGuard(ui_weak.clone());
                 let outcome = run_lifecycle(&state, &input);
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = ui_weak.upgrade() else {
@@ -1909,6 +1944,7 @@ fn wire_notepad(ui: &AppWindow, state: &Shared) {
             let (text, password, secret) =
                 (text.to_string(), password.to_string(), secret.to_string());
             std::thread::spawn(move || {
+                let _busy = BusyGuard(ui_weak.clone());
                 let outcome = run_notepad(&state, action, &text, signer_index, &password, &secret);
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = ui_weak.upgrade() else {
@@ -2179,6 +2215,7 @@ fn wire_delete(ui: &AppWindow, state: &Shared) {
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
             let fingerprint = ui.get_detail().fingerprint.to_string();
             std::thread::spawn(move || {
+                let _busy = BusyGuard(ui_weak.clone());
                 let outcome = run_delete(&state, &fingerprint);
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = ui_weak.upgrade() else {
@@ -2263,6 +2300,7 @@ fn wire_revoke(ui: &AppWindow, state: &Shared) {
             let (ui_weak, state) = (ui_weak.clone(), state.clone());
             let (message, password) = (message.to_string(), password.to_string());
             std::thread::spawn(move || {
+                let _busy = BusyGuard(ui_weak.clone());
                 let outcome = run_revoke(&state, reason, &message, &password);
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(ui) = ui_weak.upgrade() else {
