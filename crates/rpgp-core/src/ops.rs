@@ -1,7 +1,7 @@
 //! Message operations: encrypt, decrypt, sign, verify.
 
 use std::fs;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use sequoia_openpgp::crypto::{Password, SessionKey};
@@ -541,7 +541,13 @@ pub fn encrypt_file(
     output: &Path,
 ) -> Result<()> {
     let plaintext = read(input)?;
-    encrypt(recipients, passwords, signer, &plaintext, create(output)?)
+    // Buffered and written only on success, as decrypt_file does. Creating
+    // the output first meant a wrong passphrase or a recipient with no
+    // encryption key truncated whatever was already at that path and left an
+    // empty or partial file in its place.
+    let mut ciphertext = Vec::new();
+    encrypt(recipients, passwords, signer, &plaintext, &mut ciphertext)?;
+    write(output, &ciphertext)
 }
 
 pub fn sign_detached_file(
@@ -551,7 +557,9 @@ pub fn sign_detached_file(
     output: &Path,
 ) -> Result<()> {
     let data = read(input)?;
-    sign_detached(signer, password, &data, create(output)?)
+    let mut signature = Vec::new();
+    sign_detached(signer, password, &data, &mut signature)?;
+    write(output, &signature)
 }
 
 pub fn decrypt_file(
@@ -565,8 +573,7 @@ pub fn decrypt_file(
     // decryption does not leave an empty file behind.
     let mut plaintext = Vec::new();
     let result = decrypt(store, &ciphertext, passwords, &mut plaintext)?;
-    fs::write(output, &plaintext)
-        .map_err(|e| Error::io(format!("writing {}", output.display()), e))?;
+    write(output, &plaintext)?;
     Ok(result)
 }
 
@@ -585,10 +592,8 @@ fn read(path: &Path) -> Result<Vec<u8>> {
     fs::read(path).map_err(|e| Error::io(format!("reading {}", path.display()), e))
 }
 
-fn create(path: &Path) -> Result<BufWriter<fs::File>> {
-    let file =
-        fs::File::create(path).map_err(|e| Error::io(format!("writing {}", path.display()), e))?;
-    Ok(BufWriter::new(file))
+fn write(path: &Path, bytes: &[u8]) -> Result<()> {
+    fs::write(path, bytes).map_err(|e| Error::io(format!("writing {}", path.display()), e))
 }
 
 #[cfg(test)]
@@ -729,6 +734,44 @@ mod tests {
                 .unwrap()
                 .all_good()
         );
+    }
+
+    /// The mirror image for the write side. Creating the output before
+    /// validating meant a wrong passphrase truncated whatever was already at
+    /// that path.
+    #[test]
+    fn failed_encryption_and_signing_leave_the_output_untouched() {
+        let (dir, _store) = scratch_store();
+        let mut request = KeyGenRequest::new("Alice <alice@example.org>");
+        request.password = Some("correct horse".to_string().into());
+        let alice = generate(&request).unwrap().cert;
+
+        let input = dir.path().join("in.txt");
+        std::fs::write(&input, b"plaintext").unwrap();
+        let output = dir.path().join("out.asc");
+        std::fs::write(&output, b"PRECIOUS EARLIER OUTPUT").unwrap();
+
+        // Signing with the wrong passphrase must fail — and fail *before*
+        // touching the file.
+        assert!(sign_detached_file(&alice, Some("wrong"), &input, &output).is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"PRECIOUS EARLIER OUTPUT");
+
+        // Likewise sign-and-encrypt with a wrong signing passphrase.
+        assert!(
+            encrypt_file(
+                std::slice::from_ref(&alice),
+                &[],
+                Some((&alice, Some("wrong"))),
+                &input,
+                &output
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"PRECIOUS EARLIER OUTPUT");
+
+        // And a nonexistent input, the other easy way to fail.
+        assert!(encrypt_file(&[alice], &[], None, &dir.path().join("nope"), &output).is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"PRECIOUS EARLIER OUTPUT");
     }
 
     #[test]

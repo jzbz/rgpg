@@ -203,17 +203,28 @@ export component SignEncryptDialog inherits DialogShell {
         HorizontalLayout {
             spacing: Theme.s5;
             alignment: start;
+            // Unticking clears what the section collected. The fields below
+            // are conditional and are destroyed with the section, but the
+            // properties they wrote into are not — so a password typed, hidden
+            // and forgotten would otherwise still enable Run and still be
+            // used, from a field the user can no longer see.
             Check {
                 text: "Encrypt";
                 checked: root.want-encrypt;
                 enabled: !root.busy;
-                toggled => { root.want-encrypt = !root.want-encrypt; }
+                toggled => {
+                    root.want-encrypt = !root.want-encrypt;
+                    if !root.want-encrypt { root.secret = ""; }
+                }
             }
             Check {
                 text: "Sign";
                 checked: root.want-sign;
                 enabled: !root.busy && root.signers.length > 0;
-                toggled => { root.want-sign = !root.want-sign; }
+                toggled => {
+                    root.want-sign = !root.want-sign;
+                    if !root.want-sign { root.password = ""; }
+                }
             }
         }
 
@@ -394,6 +405,11 @@ export component DecryptVerifyDialog inherits DialogShell {
     callback run(string);
 
     property <string> password;
+    // A passphrase belongs to the file it was typed for. Choosing another
+    // input destroys and recreates the passphrase field, empty — but not the
+    // property behind it, so a passphrase from the last file would be sent
+    // with the next one from a field showing nothing.
+    changed input-path => { root.password = ""; }
     property <bool> can-run:
         root.input-path != "" && (!root.needs-data || root.data-path != "");
 

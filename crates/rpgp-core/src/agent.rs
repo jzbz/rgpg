@@ -87,10 +87,20 @@ async fn set_pinentry_context(agent: &mut Agent) {
     }
 }
 
+/// How long the app will wait for the agent to answer a question that needs
+/// no human — connecting, listing keys.
+///
+/// The prompt paths (signing, decrypting, certifying) are deliberately *not*
+/// held to this: a PIN entry can legitimately take a minute. But enumeration
+/// is called from the reload path, and an agent that has hung, or a socket
+/// left behind by one that died, used to hang the whole application with it.
+const ENUMERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn connect() -> Result<Agent> {
     runtime()?.block_on(async {
-        let mut agent = Agent::connect_to_default()
+        let mut agent = tokio::time::timeout(ENUMERATION_TIMEOUT, Agent::connect_to_default())
             .await
+            .map_err(|_| Error::invalid("gpg-agent did not answer in time"))?
             .map_err(|e| Error::invalid(format!("no gpg-agent to talk to: {e}")))?;
         set_pinentry_context(&mut agent).await;
         Ok(agent)
@@ -109,9 +119,9 @@ pub fn available() -> bool {
 pub fn keys() -> Result<Vec<AgentKey>> {
     let mut agent = connect()?;
     runtime()?.block_on(async {
-        let listing = agent
-            .list_keys()
+        let listing = tokio::time::timeout(ENUMERATION_TIMEOUT, agent.list_keys())
             .await
+            .map_err(|_| Error::invalid("gpg-agent did not list its keys in time"))?
             .map_err(|e| Error::invalid(format!("the agent would not list its keys: {e}")))?;
 
         Ok(listing
@@ -242,13 +252,23 @@ fn keypair_for(cert: &Cert, purpose: Purpose) -> Result<sequoia_gpg_agent::KeyPa
         .with_policy(&policy, None)
         .map_err(|_| Error::NoSecretKey(cert.fingerprint().to_hex()))?;
 
-    let usable = valid.keys().alive().revoked(false);
     let usable: Vec<_> = match purpose {
-        Purpose::Sign => usable.for_signing().collect(),
-        Purpose::Certify => usable.for_certification().collect(),
-        Purpose::Decrypt => usable
+        Purpose::Sign => valid.keys().alive().revoked(false).for_signing().collect(),
+        Purpose::Certify => valid
+            .keys()
+            .alive()
+            .revoked(false)
+            .for_certification()
+            .collect(),
+        // Deliberately *not* filtered by alive/revoked, matching the local
+        // path in ops.rs: revoking or retiring a card key withdraws it for
+        // future use, it does not burn the archive. Old mail must stay
+        // readable after the subkey it was sent to has expired or been
+        // retired — and only for making new signatures does liveness matter.
+        Purpose::Decrypt => valid
+            .keys()
             .for_transport_encryption()
-            .chain(valid.keys().alive().revoked(false).for_storage_encryption())
+            .chain(valid.keys().for_storage_encryption())
             .collect(),
     };
 

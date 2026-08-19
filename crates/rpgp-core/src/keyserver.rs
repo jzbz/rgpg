@@ -42,6 +42,36 @@ pub struct Found {
 }
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The most a keyserver or WKD reply is allowed to be.
+///
+/// A certificate with a great many signatures runs to a few hundred kilobytes;
+/// a keyserver bundle of several is a few megabytes. Anything past this is not
+/// a certificate, it is a host — malicious or broken — trying to make the app
+/// allocate until it dies. Both the announced length and the bytes actually
+/// received are held to it, because the two need not agree.
+const MAX_REPLY: usize = 8 * 1024 * 1024;
+
+/// One client for both directions: same timeout, same identity, same rule for
+/// redirects. Five hops is generous for a keyserver; a hop that leaves HTTPS
+/// is refused outright, since a downgrade on the way to fetch key material is
+/// exactly what a network attacker would arrange.
+fn client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .user_agent(concat!("rpgp/", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                attempt.error("too many redirects")
+            } else if attempt.url().scheme() != "https" {
+                attempt.error("redirected off HTTPS")
+            } else {
+                attempt.follow()
+            }
+        }))
+        .build()
+        .map_err(|e| Error::invalid(format!("cannot build an HTTP client: {e}")))
+}
 /// Verifying keyserver: it only serves addresses whose owner confirmed them.
 const DEFAULT_KEYSERVER: &str = "https://keys.openpgp.org";
 
@@ -283,13 +313,7 @@ fn post(url: &str, body: serde_json::Value) -> Result<serde_json::Value> {
         .map_err(|e| Error::invalid(format!("cannot start the network runtime: {e}")))?;
 
     runtime.block_on(async {
-        let client = reqwest::Client::builder()
-            .timeout(TIMEOUT)
-            .user_agent(concat!("rpgp/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|e| Error::invalid(format!("cannot build an HTTP client: {e}")))?;
-
-        let response = client
+        let mut response = client()?
             .post(url)
             .json(&body)
             .send()
@@ -297,7 +321,16 @@ fn post(url: &str, body: serde_json::Value) -> Result<serde_json::Value> {
             .map_err(|e| Error::invalid(format!("upload failed: {e}")))?;
 
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+        // Bounded like get(): a JSON status reply is a few hundred bytes, and
+        // an upload endpoint is no more entitled to an unbounded read.
+        let mut raw = Vec::new();
+        while let Ok(Some(chunk)) = response.chunk().await {
+            if raw.len() + chunk.len() > MAX_REPLY {
+                break;
+            }
+            raw.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8_lossy(&raw).into_owned();
         if !status.is_success() {
             // The server explains refusals in the body; passing it through
             // beats reporting a bare status code.

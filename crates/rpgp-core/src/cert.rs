@@ -319,3 +319,18 @@ pub fn format_time(time: Option<SystemTime>) -> String {
         None => String::new(),
     }
 }
+
+/// Whether any key on `cert` is named as an issuer of `signature`.
+///
+/// Issuer subpackets may carry a fingerprint or only a key ID, so the
+/// comparison goes through `KeyHandle::aliases`, which treats a key ID as
+/// matching the fingerprint it abbreviates.
+pub fn issued_by(
+    signature: &sequoia_openpgp::packet::Signature,
+    cert: &sequoia_openpgp::Cert,
+) -> bool {
+    signature
+        .get_issuers()
+        .iter()
+        .any(|issuer| cert.keys().any(|ka| issuer.aliases(ka.key().key_handle())))
+}

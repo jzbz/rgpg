@@ -173,8 +173,16 @@ pub fn revoke_certification(
         // `created + 1s` rather than `created`: a certification made 400ms ago
         // is stamped with the same second as `now`, and a naive `created > now`
         // test would never fire.
+        //
+        // Only *this certifier's* certifications set the clock. Everyone's did,
+        // once, which meant a single future-dated certification from some third
+        // party pushed our revocation into the future — where it does not apply
+        // yet, and our certification stood despite having been withdrawn.
         let mut when = SystemTime::now();
-        for existing in amalgamation.certifications() {
+        for existing in amalgamation
+            .certifications()
+            .filter(|sig| crate::cert::issued_by(sig, &certifier))
+        {
             if let Some(created) = existing.signature_creation_time() {
                 let after = created + Duration::from_secs(1);
                 if after > when {
@@ -470,6 +478,59 @@ mod tests {
         assert_eq!(
             CertSummary::from_cert(&store.lookup(&them.fingerprint().to_hex()).unwrap()).validity,
             Validity::Valid
+        );
+    }
+
+    /// Withdraw, then change your mind again. The revocation is dated a
+    /// second past the certification; a re-certification has to be dated
+    /// past the revocation in turn, or it is born already superseded.
+    #[test]
+    fn recertifying_after_a_withdrawal_takes_effect() {
+        let (_dir, store) = scratch();
+        let me = generate(&KeyGenRequest::new("Me <me@example.org>"))
+            .unwrap()
+            .cert;
+        let them = generate(&KeyGenRequest::new("Them <them@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&me).unwrap();
+        store.insert(&them).unwrap();
+
+        let authenticated = |store: &Store| {
+            let certs = store.certs().unwrap();
+            let roots: Vec<String> = store.effective_roots().unwrap().into_iter().collect();
+            wot::authenticate_all(&certs, &roots)
+                .get(&them.fingerprint().to_hex().to_uppercase())
+                .copied()
+                .unwrap_or_default()
+        };
+        let mut request =
+            CertifyRequest::new(me.fingerprint().to_hex(), them.fingerprint().to_hex());
+        request.user_ids = vec!["Them <them@example.org>".to_string()];
+
+        certify(&store, &request).unwrap();
+        // Withdraw immediately — no sleep. The revocation lands a second in
+        // the future, and the re-certification right after it must clear that
+        // second too, which is the case this guards.
+        revoke_certification(
+            &store,
+            &me.fingerprint().to_hex(),
+            &them.fingerprint().to_hex(),
+            &["Them <them@example.org>".to_string()],
+            Reason::Superseded,
+            "oops",
+            None,
+        )
+        .unwrap();
+        certify(&store, &request).unwrap();
+
+        // Both stamps may sit up to two seconds ahead of the clock; let them
+        // arrive, then the re-certification has to be the one that counts.
+        std::thread::sleep(std::time::Duration::from_millis(2300));
+        assert_eq!(
+            authenticated(&store),
+            crate::Authentication::Full,
+            "the re-certification was born superseded by the revocation before it"
         );
     }
 

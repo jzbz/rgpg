@@ -135,13 +135,33 @@ pub fn certify(store: &Store, request: &CertifyRequest) -> Result<Cert> {
 
     let mut signatures: Vec<Signature> = Vec::new();
     for wanted in &request.user_ids {
-        let userid = target
+        let amalgamation = target
             .userids()
-            .map(|ua| ua.userid().clone())
-            .find(|uid| String::from_utf8_lossy(uid.value()) == wanted.as_str())
+            .find(|ua| String::from_utf8_lossy(ua.userid().value()) == wanted.as_str())
             .ok_or_else(|| Error::invalid(format!("{wanted} is not a user ID on this key")))?;
+        let userid = amalgamation.userid().clone();
+
+        // The mirror of revoke_certification's rule. A revocation supersedes
+        // a certification made strictly earlier, so a certification has to be
+        // dated strictly *later* than any revocation of ours on this user ID
+        // or it is born dead. Withdraw-then-recertify within a second is one
+        // person clicking twice; only our own revocations count, for the same
+        // reason only our own certifications count over there.
+        let mut when = SystemTime::now();
+        for revocation in amalgamation
+            .other_revocations()
+            .filter(|sig| crate::cert::issued_by(sig, &certifier))
+        {
+            if let Some(created) = revocation.signature_creation_time() {
+                let after = created + Duration::from_secs(1);
+                if after > when {
+                    when = after;
+                }
+            }
+        }
 
         let mut builder = SignatureBuilder::new(SignatureType::GenericCertification)
+            .set_signature_creation_time(when)?
             .set_exportable_certification(request.exportable)?;
 
         // An ordinary certification already means "full confidence in this
