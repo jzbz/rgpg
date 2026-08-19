@@ -2451,6 +2451,12 @@ fn run_revoke(
 // ------------------------------------------------------------------- plumbing
 
 /// Re-read the store from disk and rebuild the list.
+///
+/// Everything here is local — cert-d, the trust graph, the secret-key files —
+/// and runs on the event loop because the list has to exist before the call
+/// returns: eight call sites follow it immediately with `reselect`. The parts
+/// that leave the machine or re-parse every secret key are handed to
+/// [`survey_agent_and_secrets`] instead.
 fn reload(ui: &AppWindow, state: &Shared) {
     let mut guard = state.lock().unwrap();
 
@@ -2475,8 +2481,6 @@ fn reload(ui: &AppWindow, state: &Shared) {
         .collect();
     let explicit_roots = guard.store.trust_roots().unwrap_or_default();
     let authenticated = wot::authenticate_all(&certs, &roots);
-    // One round trip to gpg-agent for the whole store, not one per row.
-    let agent_keys = rpgp_core::agent::annotate(&certs);
 
     // The secret half lives outside cert-d, so ask the store which ones it has.
     let State { store, all, .. } = &mut *guard;
@@ -2485,39 +2489,92 @@ fn reload(ui: &AppWindow, state: &Shared) {
         summary.has_secret = store.has_secret(&summary.fingerprint);
         summary.is_trust_root = explicit_roots.contains(&key);
         summary.authentication = authenticated.get(&key).copied().unwrap_or_default();
-        if let Some(agent_key) = agent_keys.get(&summary.fingerprint) {
-            summary.agent_backed = true;
-            summary.card_serial = agent_key.card_serial.clone();
-        }
-    }
-
-    // A secret key file that will not parse is skipped rather than allowed to
-    // hide every other key, but skipping silently would turn "my key is gone"
-    // into a mystery. Say which file, so the user can look at it.
-    let damaged = guard.store.damaged_secret_files();
-    if !damaged.is_empty() {
-        let names: Vec<String> = damaged
-            .iter()
-            .filter_map(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .collect();
-        ui.set_status(
-            format!(
-                "{} secret key file{} could not be read and {} skipped: {}",
-                damaged.len(),
-                if damaged.len() == 1 { "" } else { "s" },
-                if damaged.len() == 1 { "was" } else { "were" },
-                names.join(", ")
-            )
-            .into(),
-        );
     }
 
     // Ordering belongs to apply_filter, so changing the sort does not
     // require re-reading the store.
 
+    let store = guard.store.clone();
     drop(guard);
     apply_filter(ui, state);
+    survey_agent_and_secrets(ui, state, store);
+}
+
+/// The slow half of a reload: which keys gpg-agent holds, and which secret key
+/// files will not parse.
+///
+/// Off the event loop, because asking the agent leaves the process. An agent
+/// that has hung — or a stale socket left by one that died — used to freeze the
+/// window until it gave up, holding the state lock the whole time. The list now
+/// appears immediately and the smartcard badges arrive when the agent answers,
+/// or never, with nothing waiting on it.
+///
+/// The damaged-file survey rides along because it re-parses every secret key,
+/// which is the other thing in a reload that has no business on the UI thread.
+/// The certificates are re-read here rather than handed over from `reload`,
+/// because naming their type would put a `sequoia_openpgp` type in this crate
+/// and the GUI is deliberately free of them. The extra read is the cost of
+/// that boundary, and it is paid on a worker thread where nothing waits for it.
+fn survey_agent_and_secrets(ui: &AppWindow, state: &Shared, store: std::sync::Arc<Store>) {
+    let (ui_weak, state) = (ui.as_weak(), state.clone());
+    std::thread::spawn(move || {
+        let certs = store.certs().unwrap_or_default();
+        let agent_keys = rpgp_core::agent::annotate(&certs);
+        let damaged: Vec<String> = store
+            .damaged_secret_files()
+            .iter()
+            .filter_map(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .collect();
+        if agent_keys.is_empty() && damaged.is_empty() {
+            return;
+        }
+
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+
+            if !agent_keys.is_empty() {
+                {
+                    let mut guard = state.lock().unwrap();
+                    for summary in guard.all.iter_mut() {
+                        if let Some(key) = agent_keys.get(&summary.fingerprint) {
+                            summary.agent_backed = true;
+                            summary.card_serial = key.card_serial.clone();
+                        }
+                    }
+                }
+                // Read the selection now rather than before the agent was
+                // asked: the user may have moved since. apply_filter clears
+                // the selection, so it has to be put back.
+                let selected = ui
+                    .get_has_selection()
+                    .then(|| ui.get_detail().fingerprint.to_string());
+                apply_filter(&ui, &state);
+                if let Some(fingerprint) = selected {
+                    reselect(&ui, &state, &fingerprint);
+                }
+            }
+
+            // Last, so it survives: apply_filter above always overwrites the
+            // status with its own count. A secret key file that will not parse
+            // is skipped rather than allowed to hide every other key, but
+            // skipping silently would turn "my key is gone" into a mystery.
+            if !damaged.is_empty() {
+                ui.set_status(
+                    format!(
+                        "{} secret key file{} could not be read and {} skipped: {}",
+                        damaged.len(),
+                        if damaged.len() == 1 { "" } else { "s" },
+                        if damaged.len() == 1 { "was" } else { "were" },
+                        damaged.join(", ")
+                    )
+                    .into(),
+                );
+            }
+        });
+    });
 }
 
 /// Rebuild `shown` and the list model from the current scope and search text.
