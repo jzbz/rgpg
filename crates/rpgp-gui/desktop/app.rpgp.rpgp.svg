@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  The application icon. Not the UI shield rescaled: that is a 2px stroke on a
-  24px grid, which at icon sizes reads as a thin wire on whatever the panel
-  background happens to be. Same silhouette, given a ground of its own and a
-  stroke weight that survives being drawn at 32px.
-
-  The accent is the light-theme value, fixed rather than theme-following: an
-  icon is drawn by the desktop, not by us, and has no idea which theme is in
-  play.
--->
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!--
+    The application icon. Not the UI shield rescaled: that is a 2px stroke on a
+    24px grid, which at icon sizes reads as a thin wire on whatever the panel
+    background happens to be. Same silhouette, given a ground of its own and a
+    stroke weight that survives being drawn at 32px.
+
+    The accent is the light-theme value, fixed rather than theme-following: an
+    icon is drawn by the desktop, not by us, and has no idea which theme is in
+    play.
+  -->
   <rect width="256" height="256" rx="56" ry="56" fill="#3457dc"/>
   <g transform="translate(46 46) scale(6.4167)"
      fill="none" stroke="#ffffff" stroke-width="2"

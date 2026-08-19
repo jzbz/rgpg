@@ -1,0 +1,103 @@
+# Flatpak manifest for rPGP.
+#
+# Flathub builds with no network access, so every crate is declared up front in
+# cargo-sources.json (generated from Cargo.lock by packaging/cargo-sources.py)
+# and cargo runs --offline against a vendored registry.
+app-id: app.rpgp.rpgp
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: rpgp
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/rpgp/cargo
+
+finish-args:
+  # Wayland first, X11 as the fallback; shared IPC is what the X11 path needs.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # The GUI renders through wgpu (Vulkan), so it needs the GPU. It falls back
+  # to a software renderer without one, but that is a fallback, not the plan.
+  - --device=dri
+
+  # Keyserver and Web Key Directory lookup, and publishing. Without this the
+  # app still manages keys; it just cannot fetch or publish them.
+  - --share=network
+
+  # No grant for the certificate store, so the Flatpak keeps its own inside
+  # ~/.var/app/app.rpgp.rpgp/data and does not share it with `sq` the way a
+  # native build does. Two separate reasons, either sufficient:
+  #
+  # Flathub rejects it. Its linter flags any --filesystem=xdg-data/* as
+  # finish-args-unnecessary-xdg-data-*-access, and lifting that needs an
+  # exception submitted and argued.
+  #
+  # And it would not have worked anyway. Inside the sandbox XDG_DATA_HOME
+  # points at the app's private directory, so `dirs::data_dir()` resolves
+  # there; the grant makes the host store *visible* at ~/.local/share but
+  # nothing looks at it. Sharing would need the app to notice it is sandboxed
+  # and use the real path — worth doing only if the exception is granted.
+
+  # Smartcard support. rPGP never touches the reader: it asks the host's
+  # gpg-agent, which owns the card and raises its own PIN prompt, so the secret
+  # never leaves the card and rPGP never sees the PIN. That requires reaching
+  # the agent's socket on the host.
+  - --filesystem=xdg-run/gnupg
+
+  # Note what is *not* here: no --filesystem=home. Files to encrypt, decrypt or
+  # export are chosen through the desktop's file chooser portal (rfd is built
+  # with its xdg-portal backend), which hands back access to exactly the file
+  # the user picked and nothing else.
+
+modules:
+  # sequoia-ipc runs the Cap'n Proto compiler unconditionally in its build
+  # script. It is a build-time tool only: nothing from it is linked into or
+  # shipped with the application.
+  - name: capnproto
+    buildsystem: cmake-ninja
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_TESTING=OFF
+    cleanup:
+      - '*'
+    sources:
+      - type: archive
+        url: https://capnproto.org/capnproto-c++-1.0.2.tar.gz
+        sha256: 9057dbc0223366b74bbeca33a05de164a229b0377927f1b7ef3828cdd8cb1d7e
+
+  - name: rpgp
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_NET_OFFLINE: 'true'
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --verbose -p rpgp-gui
+      - install -Dm755 target/release/rpgp /app/bin/rpgp
+      - install -Dm644 crates/rpgp-gui/desktop/app.rpgp.rpgp.desktop
+        /app/share/applications/app.rpgp.rpgp.desktop
+      - install -Dm644 crates/rpgp-gui/desktop/app.rpgp.rpgp.metainfo.xml
+        /app/share/metainfo/app.rpgp.rpgp.metainfo.xml
+      # PNG as well as the SVG. AppStream's catalogue generator rasterises the
+      # icon itself and the freedesktop SDK's copy has no SVG loader, so an
+      # SVG-only install fails the build with icon-file-read-error. The PNGs
+      # are rendered from that same SVG by packaging/icons.sh.
+      - install -Dm644 crates/rpgp-gui/desktop/app.rpgp.rpgp-64.png
+        /app/share/icons/hicolor/64x64/apps/app.rpgp.rpgp.png
+      - install -Dm644 crates/rpgp-gui/desktop/app.rpgp.rpgp-128.png
+        /app/share/icons/hicolor/128x128/apps/app.rpgp.rpgp.png
+      - install -Dm644 crates/rpgp-gui/desktop/app.rpgp.rpgp-256.png
+        /app/share/icons/hicolor/256x256/apps/app.rpgp.rpgp.png
+      - install -Dm644 crates/rpgp-gui/desktop/app.rpgp.rpgp.svg
+        /app/share/icons/hicolor/scalable/apps/app.rpgp.rpgp.svg
+    sources:
+      - type: git
+        url: https://github.com/jzbz/rpgp.git
+        tag: v0.1.0
+      - cargo-sources.json

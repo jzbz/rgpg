@@ -2,7 +2,9 @@
 //!
 //! Public certificates live in a [pgp-cert-d] directory, the same layout `sq`
 //! uses, so certificates are shared with other Sequoia tooling instead of being
-//! locked inside this app. The default location is
+//! locked inside this app — in a native build. Inside a Flatpak sandbox
+//! `XDG_DATA_HOME` points at the app's own directory, so the store is private
+//! there unless `RPGP_CERT_STORE` says otherwise. The default location is
 //! `$XDG_DATA_HOME/pgp.cert.d`; set `RPGP_CERT_STORE` to override it.
 //!
 //! Secret keys are *not* stored there. cert-d is a store of public

@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Jonathan Zeppettini -->
+<component type="desktop-application">
+  <id>app.rpgp.rpgp</id>
+
+  <name>rPGP</name>
+  <summary>Manage OpenPGP certificates and keys</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="app.rpgp">
+    <name>Jonathan Zeppettini</name>
+  </developer>
+
+  <description>
+    <p>
+      rPGP is an OpenPGP certificate manager in the spirit of KDE's Kleopatra:
+      a window that lists your certificates and lets you generate, import,
+      export, certify, sign, encrypt, decrypt and verify without touching a
+      command line.
+    </p>
+    <p>
+      It keeps two questions apart that are easy to confuse and dangerous to
+      mix up: whether a certificate is internally valid, and whether the name
+      on it belongs to the person you think. The first is arithmetic; the
+      second is the web of trust, computed from the certifications in your own
+      store.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Generate keys to RFC 9580 or RFC 4880, with a passphrase and a
+      pre-made revocation certificate</li>
+      <li>Sign, encrypt, decrypt and verify files, or text in a built-in
+      notepad</li>
+      <li>Encrypt to certificates, to a password, or to both at once</li>
+      <li>Certify identities, mark trusted introducers, and see what
+      authenticates a key</li>
+      <li>Revoke keys, user IDs and subkeys, with the consequences spelled
+      out</li>
+      <li>Look up and publish keys over WKD and HKPS</li>
+      <li>Use keys held on a smartcard through gpg-agent, so the secret never
+      leaves the card</li>
+    </ul>
+    <p>
+      Written in Rust throughout, using Sequoia for OpenPGP and Slint for the
+      interface. No webview, no Qt, and it never shells out to gpg.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">app.rpgp.rpgp.desktop</launchable>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/jzbz/rpgp/master/packaging/screenshots/01-main-window.png</image>
+      <caption>The certificate list, with what authenticates the selected key</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/jzbz/rpgp/master/packaging/screenshots/05-notepad.png</image>
+      <caption>Decrypting and verifying a message as text, without files</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/jzbz/rpgp/master/packaging/screenshots/03-sign-encrypt.png</image>
+      <caption>Signing and encrypting a file to chosen recipients</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/jzbz/rpgp/master/packaging/screenshots/02-new-key-pair.png</image>
+      <caption>Generating a key pair to RFC 9580 or RFC 4880</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/jzbz/rpgp/master/packaging/screenshots/04-decrypt-verify.png</image>
+      <caption>Decrypting a file and reporting who signed it</caption>
+    </screenshot>
+  </screenshots>
+
+  <url type="homepage">https://rpgp.app/</url>
+  <url type="bugtracker">https://github.com/jzbz/rpgp/issues</url>
+  <url type="vcs-browser">https://github.com/jzbz/rpgp</url>
+
+  <categories>
+    <category>Utility</category>
+    <category>Security</category>
+  </categories>
+
+  <keywords>
+    <keyword>OpenPGP</keyword>
+    <keyword>PGP</keyword>
+    <keyword>GPG</keyword>
+    <keyword>encryption</keyword>
+    <keyword>signing</keyword>
+    <keyword>certificate</keyword>
+    <keyword>keyring</keyword>
+  </keywords>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#3457dc</color>
+    <color type="primary" scheme_preference="dark">#6f8dff</color>
+  </branding>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-08-19">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

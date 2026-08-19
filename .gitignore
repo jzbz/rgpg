@@ -2,3 +2,19 @@
 target/
 Cargo.lock.orig
 *.rs.bk
+
+# Generated from Cargo.lock by packaging/cargo-sources.py, 420K of it, and
+# stale the moment a dependency moves. The Flathub repository is where the
+# generated copy belongs, because that is where it is actually the build
+# input; here the generator is the thing worth keeping.
+packaging/cargo-sources.json
+
+# flatpak-builder, when run from the repository rather than pointed at a
+# directory under artifacts/.
+.flatpak-builder/
+/builddir/
+/repo/
+*.flatpak
+
+# macOS, which is a target platform, so these will appear.
+.DS_Store

@@ -228,6 +228,12 @@ app:
 
     $XDG_DATA_HOME/pgp.cert.d          (override with RPGP_CERT_STORE)
 
+That sharing is a property of a native build. The Flatpak keeps its store inside
+`~/.var/app/app.rpgp.rpgp/data` and shares it with nothing: `XDG_DATA_HOME`
+points into the sandbox there, and Flathub does not grant access to the real one
+without an exception. Point `RPGP_CERT_STORE` at a path both can reach if you
+want one store across both.
+
 Secret keys do **not** go there — cert-d is a store of public certificates, and
 a transferable secret key in it would be readable by every tool that scans the
 directory. They live in their own directory, one binary TSK per file:
