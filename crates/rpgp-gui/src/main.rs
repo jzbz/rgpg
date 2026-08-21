@@ -575,7 +575,25 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
                 let outcome = {
                     let guard = lock(&state);
                     match guard.store.import_file(file.path()) {
-                        Ok(certs) => Ok(format!("Imported {} certificate(s)", certs.len())),
+                        Ok(certs) => {
+                            // Secret keys are called out rather than folded
+                            // into the count: one arriving is the difference
+                            // between adding someone's certificate and taking
+                            // custody of their key, and an imported key is
+                            // deliberately not a trust root.
+                            let secrets = certs.iter().filter(|c| c.is_tsk()).count();
+                            Ok(if secrets == 0 {
+                                format!("Imported {} certificate(s)", certs.len())
+                            } else {
+                                format!(
+                                    "Imported {} certificate(s), {secrets} with a secret key. \
+                                     A secret key that arrives in a file is not made a trust \
+                                     root; tick Trust root in its details pane if you meant to \
+                                     trust it.",
+                                    certs.len()
+                                )
+                            })
+                        }
                         Err(import_error) => {
                             match revoke::apply_revocation_file(&guard.store, file.path()) {
                                 Ok(cert) => Ok(format!(
@@ -727,49 +745,7 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
                 .and_then(|r| guard.shown_at(r))
                 .map(|s| s.fingerprint.clone());
 
-            let recipients: Vec<Recipient> = guard
-                .all
-                .iter()
-                .filter(|c| c.can_encrypt)
-                .map(|c| {
-                    let (name, email) = split_user_id(&c.primary_user_id);
-                    Recipient {
-                        selected: preselect.as_deref() == Some(c.fingerprint.as_str()),
-                        initials: initials(&name, &email, &c.key_id),
-                        tint: tint_index(&c.fingerprint),
-                        label: if name.is_empty() {
-                            c.primary_user_id.clone()
-                        } else {
-                            name
-                        },
-                        sublabel: if email.is_empty() {
-                            c.key_id.clone()
-                        } else {
-                            email
-                        },
-                        fingerprint: c.fingerprint.clone(),
-                    }
-                })
-                .collect();
-
-            // A card key has no local secret: the agent holds it. Label those
-            // so it is obvious which choice will ask for a PIN.
-            let signers: Vec<(String, String)> = guard
-                .all
-                .iter()
-                .filter(|c| c.can_sign && (c.has_secret || c.agent_backed))
-                .map(|c| {
-                    let label = match &c.card_serial {
-                        Some(_) => format!("{} (smartcard)", c.primary_user_id),
-                        None => c.primary_user_id.clone(),
-                    };
-                    (c.fingerprint.clone(), label)
-                })
-                .collect();
-
-            guard.se_recipients = recipients;
-            guard.se_filter.clear();
-            guard.se_signers = signers;
+            build_signing_targets(&mut guard, preselect.as_deref());
 
             push_sign_encrypt(&ui, &guard);
             drop(guard);
@@ -2166,16 +2142,22 @@ fn string_of(bytes: Vec<u8>) -> String {
 }
 
 /// Fill the shared recipient and signer models from the store.
-fn load_signing_targets(ui: &AppWindow, state: &Shared) {
-    let mut guard = lock(state);
-    let recipients: Vec<Recipient> = guard
+/// Fill the shared recipient and signer models from the store.
+///
+/// `preselect` is the one thing the two callers disagree about: the
+/// sign/encrypt dialog ticks whatever the list has highlighted, the notepad
+/// starts with nothing ticked. Everything else — who can receive, who can
+/// sign, how each is labelled — was duplicated verbatim between them, which is
+/// two places to keep in step for every change to how recipients are chosen.
+fn build_signing_targets(state: &mut State, preselect: Option<&str>) {
+    let recipients: Vec<Recipient> = state
         .all
         .iter()
         .filter(|c| c.can_encrypt)
         .map(|c| {
             let (name, email) = split_user_id(&c.primary_user_id);
             Recipient {
-                selected: false,
+                selected: preselect == Some(c.fingerprint.as_str()),
                 initials: initials(&name, &email, &c.key_id),
                 tint: tint_index(&c.fingerprint),
                 label: if name.is_empty() {
@@ -2192,7 +2174,10 @@ fn load_signing_targets(ui: &AppWindow, state: &Shared) {
             }
         })
         .collect();
-    let signers: Vec<(String, String)> = guard
+
+    // A card key has no local secret: the agent holds it. Label those so it is
+    // obvious which choice will ask for a PIN.
+    let signers: Vec<(String, String)> = state
         .all
         .iter()
         .filter(|c| c.can_sign && (c.has_secret || c.agent_backed))
@@ -2204,9 +2189,15 @@ fn load_signing_targets(ui: &AppWindow, state: &Shared) {
             (c.fingerprint.clone(), label)
         })
         .collect();
-    guard.se_recipients = recipients;
-    guard.se_filter.clear();
-    guard.se_signers = signers;
+
+    state.se_recipients = recipients;
+    state.se_filter.clear();
+    state.se_signers = signers;
+}
+
+fn load_signing_targets(ui: &AppWindow, state: &Shared) {
+    let mut guard = lock(state);
+    build_signing_targets(&mut guard, None);
     push_sign_encrypt(ui, &guard);
 }
 

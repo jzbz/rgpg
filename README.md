@@ -142,10 +142,18 @@ options map onto OpenPGP as follows:
 | *(unticked)* | a local certification, never written out by `export_file` |
 | Trusted introducer | a trust signature of depth 1: keys *they* certify count here too |
 
-Trust roots are where authentication starts. Every key whose secret half is in
-the store is a root automatically — the alternative is a fresh install where
-nothing authenticates until the user finds a checkbox — and any other
-certificate can be marked one by hand from its details pane.
+Trust roots are where authentication starts. Every key you **generate here** is
+a root automatically — the alternative is a fresh install where nothing
+authenticates until the user finds a checkbox — and any other certificate can be
+marked one by hand from its details pane.
+
+A secret key that arrives by **import** is deliberately not a root. Holding the
+secret half is what the rule used to test, and importing is how someone else's
+key can satisfy it: a file containing a keypair *they* generated would otherwise
+buy them a trust root in your store, and with it a `verified` badge on whatever
+identities that key had certified. The key still works for decrypting and
+signing — it simply does not vouch for anyone until you say so. Restoring your
+own backup is the same story: tick Trust root once, and it stays.
 
 The graph is rebuilt on every store reload rather than cached, which is fine
 for the sizes tested and will need revisiting for a keyring of thousands.

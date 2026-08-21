@@ -69,6 +69,9 @@ pub struct Store {
     /// Revocation certificates made at key-generation time, kept against the
     /// day the secret key or its passphrase is gone.
     revocations_dir: PathBuf,
+    /// Fingerprints of secret keys that arrived from outside, one per line.
+    /// These are *not* implicit trust roots — see [`Store::effective_roots`].
+    imported_secrets_path: PathBuf,
 }
 
 impl Store {
@@ -120,6 +123,7 @@ impl Store {
             cert_dir: cert_dir.to_path_buf(),
             secrets_dir: secrets_dir.to_path_buf(),
             roots_path: secrets_dir.with_file_name("trust-roots"),
+            imported_secrets_path: secrets_dir.with_file_name("imported-secrets"),
             revocations_dir: secrets_dir.with_file_name("revocations"),
         })
     }
@@ -229,16 +233,85 @@ impl Store {
     }
 
     /// The roots the web of trust is actually evaluated against: the explicit
-    /// list plus every certificate whose secret key is here.
+    /// list plus every certificate whose secret key you *generated here*.
     ///
     /// Own keys are included automatically because the alternative — a fresh
     /// install where nothing authenticates until the user finds a checkbox — is
-    /// the wrong default, and because a key you hold the secret half of is one
-    /// you already trust by definition.
+    /// the wrong default, and because a key you generated is one you already
+    /// trust by definition.
+    ///
+    /// Imported secret keys are excluded, and that distinction is the whole
+    /// point of [`Store::imported_secrets`]. "I hold the secret half" used to
+    /// be the test, but importing is how a stranger's key can satisfy it:
+    /// anyone who persuades you to open a file containing a keypair *they*
+    /// generated got a trust root out of it, and with it a `verified` badge on
+    /// whatever identities that key had certified. Holding a secret you did not
+    /// choose to hold says nothing about trusting it. An imported key can still
+    /// be made a root deliberately, with the checkbox in its details pane.
     pub fn effective_roots(&self) -> Result<BTreeSet<String>> {
         let mut roots = self.trust_roots()?;
-        roots.extend(self.secret_fingerprints()?);
+        let imported = self.imported_secrets()?;
+        roots.extend(
+            self.secret_fingerprints()?
+                .into_iter()
+                .filter(|fp| !imported.contains(fp)),
+        );
         Ok(roots)
+    }
+
+    /// Fingerprints of secret keys that came from outside this installation.
+    ///
+    /// Absent entries mean "generated here", so a store written before this
+    /// distinction existed keeps every root it had; only keys imported from
+    /// now on are held back.
+    pub fn imported_secrets(&self) -> Result<BTreeSet<String>> {
+        match fs::read_to_string(&self.imported_secrets_path) {
+            Ok(text) => Ok(text
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_uppercase)
+                .collect()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(BTreeSet::new()),
+            Err(e) => Err(Error::io(
+                format!("reading {}", self.imported_secrets_path.display()),
+                e,
+            )),
+        }
+    }
+
+    /// Record a secret key as having arrived from outside.
+    ///
+    /// Only marks a key we do not already hold: re-importing a backup of a key
+    /// you generated here must not demote it, and applying a revocation or an
+    /// expiry edit rewrites the same file without changing where it came from.
+    fn mark_imported_secret(&self, fingerprint: &str) -> Result<()> {
+        let key = hex_only(fingerprint).to_uppercase();
+        let mut imported = self.imported_secrets()?;
+        if !imported.insert(key) {
+            return Ok(());
+        }
+        let mut text = imported.into_iter().collect::<Vec<_>>().join("\n");
+        text.push('\n');
+        fs::write(&self.imported_secrets_path, text).map_err(|e| {
+            Error::io(
+                format!("writing {}", self.imported_secrets_path.display()),
+                e,
+            )
+        })
+    }
+
+    /// Store a secret key that arrived from outside, rather than one generated
+    /// here. Identical to [`Store::insert_secret`] except that the key does not
+    /// become an implicit trust root.
+    pub fn insert_imported_secret(&self, cert: &Cert) -> Result<()> {
+        let fingerprint = cert.fingerprint().to_hex();
+        let already_held = self.has_secret(&fingerprint);
+        self.insert_secret(cert)?;
+        if !already_held {
+            self.mark_imported_secret(&fingerprint)?;
+        }
+        Ok(())
     }
 
     /// The fingerprint of every secret key on disk, read from the filenames.
@@ -476,7 +549,9 @@ impl Store {
                 continue;
             };
             if cert.is_tsk() {
-                self.insert_secret(&cert)?;
+                // insert_imported_secret, not insert_secret: a secret key that
+                // arrived in a file is not thereby one the user trusts.
+                self.insert_imported_secret(&cert)?;
             } else {
                 self.insert(&cert)?;
             }
@@ -1038,6 +1113,83 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("certs.d"), dir.path().join("secrets")).unwrap();
         (dir, store)
+    }
+
+    /// An imported secret key must not become a trust root.
+    ///
+    /// This is the attack the distinction exists to stop: a file containing a
+    /// keypair the attacker generated, plus a certification it makes over some
+    /// identity. Before, importing it satisfied "I hold the secret half", the
+    /// key became an implicit root, and the identity it vouched for read as
+    /// authenticated.
+    #[test]
+    fn an_imported_secret_key_is_not_a_trust_root() {
+        use crate::keygen::{KeyGenRequest, generate};
+        use sequoia_openpgp::serialize::Serialize;
+
+        let (dir, store) = scratch();
+
+        // Generated here: a root, as before.
+        let mine = generate(&KeyGenRequest::new("Me <me@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&mine).unwrap();
+        let mine_fp = mine.fingerprint().to_hex().to_uppercase();
+        assert!(store.effective_roots().unwrap().contains(&mine_fp));
+
+        // Arrived in a file: held, usable, but not a root.
+        let theirs = generate(&KeyGenRequest::new("Stranger <stranger@example.org>"))
+            .unwrap()
+            .cert;
+        let bundle = dir.path().join("theirs.pgp");
+        let mut bytes = Vec::new();
+        theirs.as_tsk().serialize(&mut bytes).unwrap();
+        std::fs::write(&bundle, &bytes).unwrap();
+
+        store.import_file(&bundle).unwrap();
+        let theirs_fp = theirs.fingerprint().to_hex().to_uppercase();
+
+        assert!(
+            store.has_secret(&theirs_fp),
+            "the key should still be held and usable for decryption"
+        );
+        assert!(store.imported_secrets().unwrap().contains(&theirs_fp));
+        assert!(
+            !store.effective_roots().unwrap().contains(&theirs_fp),
+            "an imported secret key became a trust root"
+        );
+        // And the key generated here is untouched by any of it.
+        assert!(store.effective_roots().unwrap().contains(&mine_fp));
+
+        // The user can still promote it deliberately.
+        store.set_trust_root(&theirs_fp, true).unwrap();
+        assert!(store.effective_roots().unwrap().contains(&theirs_fp));
+    }
+
+    /// Re-importing a backup of a key generated here must not demote it.
+    #[test]
+    fn re_importing_your_own_key_keeps_it_a_root() {
+        use crate::keygen::{KeyGenRequest, generate};
+        use sequoia_openpgp::serialize::Serialize;
+
+        let (dir, store) = scratch();
+        let mine = generate(&KeyGenRequest::new("Me <me@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&mine).unwrap();
+        let fp = mine.fingerprint().to_hex().to_uppercase();
+
+        let backup = dir.path().join("backup.pgp");
+        let mut bytes = Vec::new();
+        mine.as_tsk().serialize(&mut bytes).unwrap();
+        std::fs::write(&backup, &bytes).unwrap();
+        store.import_file(&backup).unwrap();
+
+        assert!(
+            !store.imported_secrets().unwrap().contains(&fp),
+            "a key we already held was marked as imported"
+        );
+        assert!(store.effective_roots().unwrap().contains(&fp));
     }
 
     /// `secret_fingerprints` must answer exactly what `has_secret` answers,
