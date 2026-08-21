@@ -569,49 +569,73 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
                 let Some(ui) = ui_weak.upgrade() else {
                     return;
                 };
-                // A revocation certificate is a bare signature, not a
-                // certificate, so CertParser rejects it. Same button, because a
-                // user handed a .rev file expects Import to take it.
-                let outcome = {
-                    let guard = lock(&state);
-                    match guard.store.import_file(file.path()) {
-                        Ok(certs) => {
-                            // Secret keys are called out rather than folded
-                            // into the count: one arriving is the difference
-                            // between adding someone's certificate and taking
-                            // custody of their key, and an imported key is
-                            // deliberately not a trust root.
-                            let secrets = certs.iter().filter(|c| c.is_tsk()).count();
-                            Ok(if secrets == 0 {
-                                format!("Imported {} certificate(s)", certs.len())
-                            } else {
-                                format!(
-                                    "Imported {} certificate(s), {secrets} with a secret key. \
-                                     A secret key that arrives in a file is not made a trust \
-                                     root; tick Trust root in its details pane if you meant to \
-                                     trust it.",
-                                    certs.len()
-                                )
-                            })
-                        }
-                        Err(import_error) => {
-                            match revoke::apply_revocation_file(&guard.store, file.path()) {
-                                Ok(cert) => Ok(format!(
-                                    "Revoked {}",
-                                    rpgp_core::CertSummary::from_cert(&cert).primary_user_id
-                                )),
-                                Err(_) => Err(import_error),
+                // Off the event loop, like key generation above. Parsing a
+                // keyring and writing one cert-d file per certificate is
+                // unbounded work — a GnuPG pubring can hold thousands — and
+                // doing it here held the state lock and froze the window for
+                // the whole import. The file dialog itself has to stay on the
+                // main thread, which is why only this half moves.
+                ui.set_busy(true);
+                ui.set_status("Importing…".into());
+                let path = file.path().to_path_buf();
+                let (ui_weak, state) = (ui_weak.clone(), state.clone());
+                std::thread::spawn(move || {
+                    let _busy = BusyGuard(ui_weak.clone());
+                    let outcome = {
+                        let guard = lock(&state);
+                        // A revocation certificate is a bare signature, not a
+                        // certificate, so CertParser rejects it. Same button,
+                        // because a user handed a .rev file expects Import to
+                        // take it.
+                        match guard.store.import_file(&path) {
+                            Ok(certs) => {
+                                // Secret keys are called out rather than folded
+                                // into the count: one arriving is the difference
+                                // between adding someone's certificate and taking
+                                // custody of their key, and an imported key is
+                                // deliberately not a trust root.
+                                let secrets = certs.iter().filter(|c| c.is_tsk()).count();
+                                Ok(if secrets == 0 {
+                                    format!("Imported {} certificate(s)", certs.len())
+                                } else {
+                                    format!(
+                                        "Imported {} certificate(s), {secrets} with a secret \
+                                         key. A secret key that arrives in a file is not made \
+                                         a trust root; tick Trust root in its details pane if \
+                                         you meant to trust it.",
+                                        certs.len()
+                                    )
+                                })
+                            }
+                            Err(import_error) => {
+                                match revoke::apply_revocation_file(&guard.store, &path) {
+                                    Ok(cert) => Ok(format!(
+                                        "Revoked {}",
+                                        rpgp_core::CertSummary::from_cert(&cert).primary_user_id
+                                    )),
+                                    Err(_) => Err(import_error),
+                                }
                             }
                         }
-                    }
-                };
-                match outcome {
-                    Ok(message) => {
-                        reload(&ui, &state);
-                        ui.set_status(message.into());
-                    }
-                    Err(e) => ui.set_status(format!("Import failed: {e}").into()),
-                }
+                    };
+
+                    // One refresh at the end rather than progressive updates:
+                    // the list stays as it was until the import is complete,
+                    // which is what it did when this ran inline.
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let Some(ui) = ui_weak.upgrade() else {
+                            return;
+                        };
+                        ui.set_busy(false);
+                        match outcome {
+                            Ok(message) => {
+                                reload(&ui, &state);
+                                ui.set_status(message.into());
+                            }
+                            Err(e) => ui.set_status(format!("Import failed: {e}").into()),
+                        }
+                    });
+                });
             });
         }
     });

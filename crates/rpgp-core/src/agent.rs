@@ -219,6 +219,12 @@ pub fn decryptor_for(cert: &Cert) -> Result<sequoia_gpg_agent::KeyPair> {
     keypair_for(cert, Purpose::Decrypt)
 }
 
+/// [`decryptor_for`] against a key listing the caller already fetched with
+/// [`keys`], for callers walking many certificates in one operation.
+pub fn decryptor_for_with(cert: &Cert, held: &[AgentKey]) -> Result<sequoia_gpg_agent::KeyPair> {
+    keypair_for_with(cert, Purpose::Decrypt, held)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Purpose {
     Sign,
@@ -235,7 +241,24 @@ pub fn signer_for(cert: &Cert) -> Result<sequoia_gpg_agent::KeyPair> {
 }
 
 fn keypair_for(cert: &Cert, purpose: Purpose) -> Result<sequoia_gpg_agent::KeyPair> {
-    let held = keys()?;
+    keypair_for_with(cert, purpose, &keys()?)
+}
+
+/// [`keypair_for`] against a key listing the caller already has.
+///
+/// Every one of these calls connects to the agent and enumerates its keys, and
+/// the decrypt fallback in `ops` runs it inside a loop over (packet x
+/// certificate) — so a message that no local key opens paid a round trip per
+/// combination to re-fetch a list that does not change during one operation.
+/// Splitting the listing out lets that loop fetch it once.
+///
+/// This does not move any PIN prompt: the agent asks when the returned keypair
+/// is *used*, not when it is built.
+fn keypair_for_with(
+    cert: &Cert,
+    purpose: Purpose,
+    held: &[AgentKey],
+) -> Result<sequoia_gpg_agent::KeyPair> {
     let policy = crate::policy();
     let valid = cert
         .with_policy(&policy, None)

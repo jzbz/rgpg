@@ -460,6 +460,15 @@ impl DecryptionHelper for Helper<'_> {
         // otherwise re-parse the whole store for each of them.
         let candidates = self.store.certs()?;
 
+        // The agent's key list, fetched once. decryptor_for connects and
+        // enumerates on every call, and the loop below runs it for every
+        // (packet x certificate) pair — so a message no local key opened paid a
+        // round trip per combination to re-fetch a list that cannot change
+        // during one decrypt. An unreachable agent is not an error here: it
+        // means there is nothing on a card to try, and the loop falls through
+        // to the same "nothing opens this" it would have reached anyway.
+        let held = crate::agent::keys().unwrap_or_default();
+
         for pkesk in pkesks {
             for cert in &candidates {
                 let Ok(valid) = cert.with_policy(&policy, None) else {
@@ -481,7 +490,7 @@ impl DecryptionHelper for Helper<'_> {
                     continue;
                 }
 
-                let Ok(mut pair) = crate::agent::decryptor_for(cert) else {
+                let Ok(mut pair) = crate::agent::decryptor_for_with(cert, &held) else {
                     continue;
                 };
                 if pkesk
