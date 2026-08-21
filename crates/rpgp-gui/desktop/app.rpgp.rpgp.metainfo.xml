@@ -109,6 +109,27 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.1.1" date="2026-08-21">
+      <description>
+        <p>Fixes found by a security and optimization review of the whole tree.</p>
+        <ul>
+          <li>Decrypting a file could destroy an unrelated file that happened to
+          sit at the name used for the temporary output</li>
+          <li>A secret key that arrived by import silently became a web-of-trust
+          root, so an imported key could make identities it had certified read
+          as verified. Keys you generate are still roots; an imported one can be
+          made one from its details pane</li>
+          <li>Certifying an identity could be silently prevented by a planted
+          revocation packet that named your key without being signed by it</li>
+          <li>Publishing reported success when the confirmation-mail request had
+          failed, leaving an address the keyserver would never serve</li>
+          <li>Keyserver lookups no longer follow redirects to private addresses</li>
+          <li>The interface font is bundled, so the app looks the same however
+          it is installed</li>
+          <li>Reloading a large keyring is roughly twice as fast</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-08-19">
       <description>
         <p>First release.</p>

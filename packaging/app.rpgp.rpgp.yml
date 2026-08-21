@@ -99,8 +99,8 @@ modules:
     sources:
       - type: git
         url: https://github.com/jzbz/rpgp.git
-        tag: v0.1.0
+        tag: v0.1.1
         # Pinned alongside the tag so a tag that is later moved cannot change
         # what Flathub builds. Both have to be updated together on a release.
-        commit: c5d97b78cccf646acc8b2763acafaf63caf87e66
+        commit: a93007f1b74b8ae91ca95082b3c5143cc9322e85
       - cargo-sources.json
