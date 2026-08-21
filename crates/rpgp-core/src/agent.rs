@@ -174,7 +174,10 @@ pub fn holds_signing_key(cert: &Cert) -> Result<Option<AgentKey>> {
 /// Returns fingerprint -> the agent key backing it. Per-certificate lookups
 /// would re-connect and re-list for every row in the list; the store is read
 /// wholesale, so this is too.
-pub fn annotate(certs: &[Cert]) -> HashMap<String, AgentKey> {
+pub fn annotate<C>(certs: &[C]) -> HashMap<String, AgentKey>
+where
+    C: std::ops::Deref<Target = Cert>,
+{
     let mut found = HashMap::new();
     let Ok(held) = keys() else {
         return found;

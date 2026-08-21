@@ -74,6 +74,33 @@ pub struct Store {
     imported_secrets_path: PathBuf,
 }
 
+/// A certificate in the store, borrowed rather than copied.
+///
+/// Behaves as a `&Cert` through [`Deref`](std::ops::Deref): every method a
+/// caller used on the owned `Cert` still resolves. It exists so [`Store::certs`]
+/// can hand back the whole keyring without deep-copying it.
+#[derive(Clone)]
+pub struct CertRef(Arc<LazyCert<'static>>);
+
+impl std::ops::Deref for CertRef {
+    type Target = Cert;
+
+    fn deref(&self) -> &Cert {
+        // Infallible here: `Store::certs` resolves every LazyCert before
+        // wrapping it, and `to_cert` memoises that result, so the only way to
+        // hold a CertRef is to have already parsed successfully.
+        self.0
+            .to_cert()
+            .expect("CertRef holds a LazyCert that Store::certs already resolved")
+    }
+}
+
+impl std::fmt::Debug for CertRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CertRef({})", self.fingerprint().to_hex())
+    }
+}
+
 impl Store {
     /// Open the default store, creating both directories if they are missing.
     pub fn open_default() -> Result<Self> {
@@ -358,10 +385,22 @@ impl Store {
     ///
     /// cert-d hands back `LazyCert`s that are only parsed on demand; the GUI
     /// needs every field of every row, so they are all resolved here.
-    pub fn certs(&self) -> Result<Vec<Cert>> {
+    ///
+    /// Resolved, not copied. The parse is memoised inside each `LazyCert`, so
+    /// once it has happened the certificate is simply there to borrow — but
+    /// this used to hand back a deep clone of every one of them, primary key,
+    /// user IDs, subkeys and every certification signature included. Measured
+    /// on a thousand-certificate store that copy was about three quarters of
+    /// this call, and a reload makes the call twice. Nothing downstream wants
+    /// ownership: [`CertRef`] derefs to `&Cert`, so callers read exactly what
+    /// they read before.
+    pub fn certs(&self) -> Result<Vec<CertRef>> {
         let mut out = Vec::new();
         for lazy in self.certs.certs() {
-            out.push(lazy.to_cert()?.clone());
+            // Resolved eagerly, so an unparseable certificate still fails the
+            // whole call here rather than surfacing later as a panic in Deref.
+            lazy.to_cert()?;
+            out.push(CertRef(lazy));
         }
         Ok(out)
     }

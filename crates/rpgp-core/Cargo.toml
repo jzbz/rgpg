@@ -41,3 +41,9 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile = "3"
+
+# Plain binary, no bench harness: see the module docs in benches/reload.rs for
+# why this is not criterion.
+[[bench]]
+name = "reload"
+harness = false

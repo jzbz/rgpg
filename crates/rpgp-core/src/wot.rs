@@ -57,7 +57,10 @@ impl Authentication {
 /// A failure to build the network is reported as "nothing is authenticated"
 /// rather than as an error: an unusable trust graph should grey out the
 /// trust column, not stop the list from being shown.
-pub fn authenticate_all(certs: &[Cert], roots: &[String]) -> HashMap<String, Authentication> {
+pub fn authenticate_all<C>(certs: &[C], roots: &[String]) -> HashMap<String, Authentication>
+where
+    C: std::ops::Deref<Target = Cert>,
+{
     // The all-Unknown map is only what the two early returns below hand back.
     // Building it up front meant the success path inserted every key twice —
     // once as Unknown and once with the real verdict — allocating the key
@@ -80,7 +83,9 @@ pub fn authenticate_all(certs: &[Cert], roots: &[String]) -> HashMap<String, Aut
     }
 
     let policy = crate::policy();
-    let Ok(network) = Network::from_cert_refs(certs.iter(), &policy, None, roots.as_slice()) else {
+    let Ok(network) =
+        Network::from_cert_refs(certs.iter().map(|c| &**c), &policy, None, roots.as_slice())
+    else {
         return unknown();
     };
 

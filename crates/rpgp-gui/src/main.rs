@@ -2556,7 +2556,7 @@ fn reload(ui: &AppWindow, state: &Shared) {
         }
     };
 
-    guard.all = certs.iter().map(CertSummary::from_cert).collect();
+    guard.all = certs.iter().map(|c| CertSummary::from_cert(c)).collect();
 
     // Authentication is a property of the whole graph, so it is computed once
     // for the store rather than per certificate. Trust roots are the explicit

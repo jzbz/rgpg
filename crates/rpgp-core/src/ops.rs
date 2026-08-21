@@ -498,7 +498,10 @@ impl DecryptionHelper for Helper<'_> {
                     .is_some_and(|(algo, session_key)| decrypt(algo, &session_key))
                 {
                     self.decrypted_with = Some(cert.fingerprint().to_hex());
-                    return Ok(Some(cert.clone()));
+                    // The one place a caller genuinely needs an owned Cert:
+                    // DecryptionHelper returns it by value. Exactly one clone,
+                    // of the certificate that opened the message.
+                    return Ok(Some((**cert).clone()));
                 }
             }
         }
