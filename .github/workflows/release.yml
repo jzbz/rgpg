@@ -32,6 +32,11 @@ permissions:
 
 env:
   RUNTIME_VERSION: "25.08"
+  # The tag being released. A tag push carries it in github.ref_name; a manual
+  # run names it explicitly, which is the only way to build a tag cut before
+  # this workflow existed — workflow_dispatch reads the workflow file from the
+  # ref it is given, so such a tag can never dispatch itself.
+  TAG: ${{ inputs.ref || github.ref_name }}
 
 jobs:
   bundle:
@@ -132,7 +137,7 @@ jobs:
       - name: Bundle
         run: |
           set -euo pipefail
-          NAME="rpgp-${GITHUB_REF_NAME}-${{ matrix.arch }}.flatpak"
+          NAME="rpgp-${TAG}-${{ matrix.arch }}.flatpak"
           flatpak build-bundle --arch=${{ matrix.arch }} \
             repo "$NAME" app.rpgp.rpgp master
           sha256sum "$NAME" | tee "$NAME.sha256"
@@ -148,9 +153,7 @@ jobs:
   release:
     name: Attach to the release
     needs: bundle
-    # Only a tag push publishes. A workflow_dispatch run builds the bundles
-    # and stops, so the workflow can be exercised without creating a release.
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(inputs.ref || github.ref_name, 'v')
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -168,15 +171,15 @@ jobs:
           # A tag push creates no release on its own, so make one if it is not
           # already there. --verify-tag refuses to invent a tag that does not
           # exist, which would otherwise turn a typo into a published release.
-          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" \
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
-              --title "rPGP $GITHUB_REF_NAME" \
+              --title "rPGP $TAG" \
               --generate-notes
           fi
 
-          gh release upload "$GITHUB_REF_NAME" \
+          gh release upload "$TAG" \
             *.flatpak *.flatpak.sha256 \
             --repo "$GITHUB_REPOSITORY" --clobber
 
@@ -194,7 +197,7 @@ jobs:
   pages:
     name: Publish the flatpak repository
     needs: bundle
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(inputs.ref || github.ref_name, 'v')
     timeout-minutes: 30
     runs-on: ubuntu-latest
     environment:
