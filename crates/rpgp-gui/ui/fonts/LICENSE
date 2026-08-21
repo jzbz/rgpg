@@ -1,8 +1,11 @@
-Both fonts here are redistributed under the SIL Open Font License 1.1, which
+All fonts here are redistributed under the SIL Open Font License 1.1, which
 requires this notice and licence text to accompany them.
 
   geo.ttf              the rPGP wordmark only
   source-code-pro.ttf  fingerprints, key IDs and other machine values
+  geist-regular.ttf    the interface font, at the three weights the UI asks
+  geist-semibold.ttf   for. Medium was tried and dropped: Slint resolves the
+  geist-bold.ttf       550 weight to SemiBold, so shipping it changed nothing.
 
 Copyright (c) 2000-2010, Ben Weiner (ben@readingtype.org.uk),
 with Reserved Font Name Geo.
@@ -10,9 +13,12 @@ with Reserved Font Name Geo.
 Copyright 2010, 2012 Adobe Systems Incorporated (http://www.adobe.com/),
 with Reserved Font Name 'Source'.
 
-Both were converted from WOFF2 to TrueType, the only outline format Slint
-accepts. The outlines are unmodified, so the Reserved Font Names still apply
-and these are still Geo and Source Code Pro.
+Copyright (c) 2023 Vercel, Inc., with Reserved Font Name "Geist".
+
+Geo and Source Code Pro were converted from WOFF2 to TrueType, the only
+outline format Slint accepts; Geist is shipped as the upstream static TrueType
+instances. No outlines were modified, so the Reserved Font Names still apply
+and these are still Geo, Source Code Pro and Geist.
 
 ----------------------------------------------------------------------
 

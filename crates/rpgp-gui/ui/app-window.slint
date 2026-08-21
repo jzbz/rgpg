@@ -18,6 +18,15 @@ import "fonts/geo.ttf";
 // matters looked different on every platform.
 import "fonts/source-code-pro.ttf";
 
+// The interface font, bundled rather than left to the system. Without it the
+// default family is whatever fontconfig resolves, which is not the same thing
+// twice: Noto Sans on a Fedora host, DejaVu Sans inside the Flatpak runtime.
+// Two different faces meant two different text extents, so the same build
+// laid its buttons out differently depending on how it was installed.
+import "fonts/geist-regular.ttf";
+import "fonts/geist-semibold.ttf";
+import "fonts/geist-bold.ttf";
+
 export { CertRow, CertificationRow, LookupRow, RecipientRow, SignatureRow, SubkeyRow, UserIdDetailRow, UserIdRow }
 
 component RailItem inherits Rectangle {
@@ -202,6 +211,7 @@ export component AppWindow inherits Window {
     preferred-height: 760px;
     min-width: 860px;
     min-height: 520px;
+    default-font-family: "Geist";
     default-font-size: Theme.t-md;
     background: Theme.bg;
 
