@@ -1,5 +1,10 @@
-# Builds the Flatpak bundle for each architecture and attaches it to the
+# Builds the Flatpak bundle for each architecture and attaches both to the
 # release for the tag that triggered the run.
+#
+# Bundles, not a repository. A .flatpak bundle is one architecture and does not
+# update itself: whoever installs one stays on it until they reinstall by hand.
+# Flathub is the channel that solves both, and these exist to bridge until it
+# is there.
 #
 # Only official actions, for the reason the CI workflow gives: this is a
 # project about handling secret keys, and a third-party action runs with the
@@ -25,10 +30,6 @@ on:
 
 permissions:
   contents: write
-  # For the Pages deployment below. id-token is what deploy-pages uses to
-  # prove the artifact came from this workflow run.
-  pages: write
-  id-token: write
 
 env:
   RUNTIME_VERSION: "25.08"
@@ -93,16 +94,39 @@ jobs:
           exit 1
 
       # The runtime is a large download and the bulk of this job's wall clock.
+      #
+      # Retried, because the failure seen here was Flathub advertising a commit
+      # its CDN then 404s on — a repository mid-publish, not a missing ref. The
+      # ref resolves; only the pull fails, and it succeeds once propagation
+      # catches up. Nothing local can fix that, so the loop simply waits.
       - name: Install the freedesktop runtime and the Rust SDK extension
         timeout-minutes: 40
         run: |
           set -euo pipefail
           flatpak remote-add --if-not-exists --user \
             flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak install --user --noninteractive --arch=${{ matrix.arch }} flathub \
-            org.freedesktop.Platform//$RUNTIME_VERSION \
-            org.freedesktop.Sdk//$RUNTIME_VERSION \
-            org.freedesktop.Sdk.Extension.rust-stable//$RUNTIME_VERSION
+
+          attempts=3
+          for attempt in $(seq 1 $attempts); do
+            rc=0
+            flatpak install --user --noninteractive --arch=${{ matrix.arch }} flathub \
+              org.freedesktop.Platform//$RUNTIME_VERSION \
+              org.freedesktop.Sdk//$RUNTIME_VERSION \
+              org.freedesktop.Sdk.Extension.rust-stable//$RUNTIME_VERSION || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              exit 0
+            fi
+            echo "::warning::flatpak install attempt $attempt failed with $rc"
+            if [ "$attempt" -lt "$attempts" ]; then
+              # Long enough for a publish to finish propagating, short enough
+              # to stay inside the step ceiling with three attempts.
+              sleep 120
+            fi
+          done
+          echo "::error::could not install the runtime after $attempts attempts."
+          echo "::error::If this is a 404 while pulling, Flathub is advertising a commit"
+          echo "::error::it cannot serve yet; the run needs retrying later, not fixing."
+          exit 1
 
       # Generated rather than committed: it is 420K, derived entirely from
       # Cargo.lock, and stale the moment a dependency moves.
@@ -182,122 +206,3 @@ jobs:
           gh release upload "$TAG" \
             *.flatpak *.flatpak.sha256 \
             --repo "$GITHUB_REPOSITORY" --clobber
-
-  # A repository, not just loose bundle files. A .flatpak bundle is one
-  # architecture and never updates: whoever installs one is pinned to it until
-  # they notice a new release and reinstall by hand, which for a tool that has
-  # already shipped a data-loss fix is the wrong default. A remote serves both
-  # architectures from one URL, picks the right one, and `flatpak update`
-  # works.
-  #
-  # Signed, because publishing unsigned software from an OpenPGP project would
-  # be indefensible. The key is a dedicated repository-signing key, not the
-  # maintainer's own: it lives in CI and should be replaceable without
-  # touching anything a user has certified.
-  pages:
-    name: Publish the flatpak repository
-    needs: bundle
-    if: startsWith(inputs.ref || github.ref_name, 'v')
-    timeout-minutes: 30
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          merge-multiple: true
-          path: bundles
-
-      - name: Install flatpak
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 180s \
-            apt-get -o Acquire::Retries=2 -o Acquire::Languages=none update
-          sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 300s \
-            apt-get -o Acquire::Retries=2 install -y flatpak
-
-      - name: Import the repository signing key
-        env:
-          KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
-          KEY_ID: ${{ vars.FLATPAK_GPG_KEY_ID }}
-        run: |
-          set -euo pipefail
-          if [ -z "${KEY:-}" ] || [ -z "${KEY_ID:-}" ]; then
-            echo "::error::No signing key. Set the FLATPAK_GPG_PRIVATE_KEY secret and the"
-            echo "::error::FLATPAK_GPG_KEY_ID variable, or this would publish an unsigned repository."
-            exit 1
-          fi
-          mkdir -p "$HOME/.gnupg" && chmod 700 "$HOME/.gnupg"
-          printf '%s' "$KEY" | gpg --batch --import
-          echo "$KEY_ID" > /tmp/keyid
-
-      # Each architecture was built on its own runner, so they arrive as
-      # separate bundles and are imported into one repository here.
-      - name: Build the repository
-        run: |
-          set -euo pipefail
-          KEY_ID=$(cat /tmp/keyid)
-          for b in bundles/*.flatpak; do
-            echo "importing $b"
-            flatpak build-import-bundle --update-appstream repo "$b"
-          done
-          flatpak build-update-repo \
-            --generate-static-deltas \
-            --gpg-sign="$KEY_ID" \
-            --title="rPGP" \
-            --comment="OpenPGP certificate manager" \
-            --homepage="https://rpgp.app/" \
-            repo
-          gpg --export --armor "$KEY_ID" > repo/key.gpg
-          du -sh repo
-
-      # The file a user points `flatpak remote-add` at. The key is inlined so
-      # adding the remote and trusting it are one step and cannot drift apart.
-      - name: Write the remote description and landing page
-        run: |
-          set -euo pipefail
-          KEY_ID=$(cat /tmp/keyid)
-          # The Pages site for this repository. Named once here so the
-          # remote description and the landing page cannot disagree.
-          BASE="https://jzbz.github.io/rpgp"
-          {
-            echo "[Flatpak Repo]"
-            echo "Title=rPGP"
-            echo "Url=$BASE/repo/"
-            echo "Homepage=https://rpgp.app/"
-            echo "Comment=OpenPGP certificate manager"
-            echo "Description=Signed builds of rPGP, until it is on Flathub."
-            printf 'GPGKey=%s\n' "$(gpg --export "$KEY_ID" | base64 -w0)"
-          } > repo/rpgp.flatpakrepo
-          cp repo/rpgp.flatpakrepo rpgp.flatpakrepo 2>/dev/null || true
-
-          cat > index.html <<HTML
-          <!doctype html><meta charset=utf-8>
-          <title>rPGP flatpak repository</title>
-          <style>body{font:16px/1.6 system-ui,sans-serif;max-width:44rem;margin:4rem auto;padding:0 1rem}
-          code,pre{background:#f4f4f5;padding:.15em .35em;border-radius:4px}
-          pre{padding:1rem;overflow-x:auto}</style>
-          <h1>rPGP</h1>
-          <p>Signed builds for x86_64 and aarch64, until rPGP is on Flathub.</p>
-          <pre>flatpak remote-add --if-not-exists rpgp $BASE/repo/rpgp.flatpakrepo
-          flatpak install rpgp app.rpgp.rpgp</pre>
-          <p>Updates arrive with <code>flatpak update</code>. Signed with key
-          <code>$KEY_ID</code>; the remote description carries the key, so
-          adding the remote is what establishes trust in it.</p>
-          <p><a href="https://github.com/jzbz/rpgp">Source</a> &middot;
-          <a href="https://rpgp.app/">rpgp.app</a></p>
-          HTML
-          mv repo _site_repo && mkdir _site && mv _site_repo _site/repo
-          mv index.html _site/
-          cp _site/repo/rpgp.flatpakrepo _site/
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-
-      - id: deploy
-        uses: actions/deploy-pages@v4
