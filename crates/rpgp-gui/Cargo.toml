@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "rpgp_gui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rpgp"
 path = "src/main.rs"
@@ -57,6 +61,10 @@ rustix = { version = "1", features = ["process"] }
 # ElementHandle::accessible_value, to assert on what the accessibility tree
 # actually publishes rather than trusting that input-type is enough.
 i-slint-backend-testing = "1.17"
+
+[[bench]]
+name = "keystroke"
+harness = false
 
 [build-dependencies]
 slint-build = "1.17"
