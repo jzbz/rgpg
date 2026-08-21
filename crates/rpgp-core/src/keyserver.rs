@@ -65,6 +65,8 @@ fn client() -> Result<reqwest::Client> {
                 attempt.error("too many redirects")
             } else if attempt.url().scheme() != "https" {
                 attempt.error("redirected off HTTPS")
+            } else if redirects_inward(attempt.url()) {
+                attempt.error("redirected to a private address")
             } else {
                 attempt.follow()
             }
@@ -72,6 +74,49 @@ fn client() -> Result<reqwest::Client> {
         .build()
         .map_err(|e| Error::invalid(format!("cannot build an HTTP client: {e}")))
 }
+/// Whether a redirect target names an address inside the machine or its
+/// network, which a keyserver never legitimately does.
+///
+/// Scheme and hop count alone left the client willing to follow a hostile
+/// server's `Location` to a loopback or RFC1918 address, turning a key lookup
+/// into a probe of whatever the user's network runs — blind, since the body is
+/// parsed as a certificate and discarded, but the difference between a refused
+/// connection and a timeout is still an answer.
+///
+/// Only IP literals are rejected. A DNS name that resolves inward still passes,
+/// because refusing that needs a resolver-level hook rather than a URL test;
+/// this closes the direct case and does not pretend to close the other one.
+fn redirects_inward(url: &reqwest::Url) -> bool {
+    use std::net::IpAddr;
+
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    // An IPv6 literal arrives bracketed in a URL; a domain name will not parse
+    // as an address at all, which is the "not a literal" case below.
+    let Ok(addr) = host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() else {
+        return false;
+    };
+    match addr {
+        IpAddr::V4(v4) => {
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                // Unique-local (fc00::/7) and link-local (fe80::/10). The std
+                // predicates for these are still unstable, so test directly.
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
 /// Verifying keyserver: it only serves addresses whose owner confirmed them.
 const DEFAULT_KEYSERVER: &str = "https://keys.openpgp.org";
 
@@ -263,7 +308,13 @@ pub struct Published {
 /// Only the public half is ever sent — the secret key material is stripped
 /// first, so a caller that hands over a certificate carrying secrets does not
 /// publish them by accident.
-pub fn publish(cert: &Cert) -> Result<Published> {
+/// The exact bytes [`publish`] uploads.
+///
+/// Split out so the guarantees in publish's doc comment can be asserted on the
+/// upload itself, without a keyserver to talk to. The test that claimed to
+/// prove them only ever inspected the *reply*, and carried `#[ignore]`, so
+/// nothing would have caught a regression here.
+fn upload_body(cert: &Cert) -> Result<String> {
     use sequoia_openpgp::serialize::SerializeInto;
 
     let public = cert.clone().strip_secret_key_material();
@@ -271,8 +322,12 @@ pub fn publish(cert: &Cert) -> Result<Published> {
     // signatures marked non-exportable, which is what a "local" certification
     // made in this app is. to_vec would have sent every private trust
     // statement the user ever made about this key to a public server.
-    let armored = String::from_utf8(public.armored().export_to_vec()?)
-        .map_err(|_| Error::invalid("the certificate did not armor as text"))?;
+    String::from_utf8(public.armored().export_to_vec()?)
+        .map_err(|_| Error::invalid("the certificate did not armor as text"))
+}
+
+pub fn publish(cert: &Cert) -> Result<Published> {
+    let armored = upload_body(cert)?;
 
     let body = serde_json::json!({ "keytext": armored });
     let reply = post(&format!("{}/vks/v1/upload", keyserver()), body)?;
@@ -524,6 +579,108 @@ mod tests {
             &["demo@example.invalid".to_string()],
         )
         .expect("verification request should be accepted");
+    }
+
+    /// What publish actually uploads: a public key block, with no secret key
+    /// material and no local certifications.
+    ///
+    /// Runs without a keyserver, so unlike the ignored integration test below
+    /// this one guards the property on every `cargo test`.
+    ///
+    /// The local-certification half is the part with teeth. Serialising a
+    /// `Cert` writes only the public half whatever `strip_secret_key_material`
+    /// did, so the no-secrets assertion documents the invariant more than it
+    /// defends it; swapping `export_to_vec` for `to_vec`, on the other hand,
+    /// silently ships every private trust statement the user ever made, and
+    /// that is what this catches.
+    #[test]
+    fn the_upload_carries_no_secret_material_and_no_local_certifications() {
+        use crate::certify::{CertifyRequest, certify};
+        use crate::keygen::{KeyGenRequest, generate};
+        use sequoia_openpgp::parse::Parse;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            crate::store::Store::open(dir.path().join("certs.d"), dir.path().join("secrets"))
+                .unwrap();
+
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        let bob = generate(&KeyGenRequest::new("Bob <bob@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+        store.insert(&bob).unwrap();
+        assert!(alice.is_tsk(), "the fixture must carry a secret half");
+
+        // A local certification: kept in this store, never published.
+        let mut request =
+            CertifyRequest::new(alice.fingerprint().to_hex(), bob.fingerprint().to_hex());
+        request.user_ids = vec!["Bob <bob@example.org>".to_string()];
+        request.exportable = false;
+        let bob = certify(&store, &request).unwrap();
+        assert_eq!(
+            bob.userids().next().unwrap().certifications().count(),
+            1,
+            "the local certification must be on the cert we are about to upload"
+        );
+
+        let body = upload_body(&bob).unwrap();
+        assert!(body.contains("-----BEGIN PGP PUBLIC KEY BLOCK-----"));
+        assert!(
+            !body.contains("PRIVATE KEY BLOCK"),
+            "a private key block reached the upload body"
+        );
+
+        let uploaded = Cert::from_bytes(body.as_bytes()).unwrap();
+        assert!(
+            !uploaded.is_tsk(),
+            "the uploaded certificate still carries secret key material"
+        );
+        assert_eq!(uploaded.fingerprint(), bob.fingerprint());
+        assert_eq!(
+            uploaded.userids().next().unwrap().certifications().count(),
+            0,
+            "a non-exportable local certification reached the upload"
+        );
+
+        // And the signer's own secret key never armors into the body either.
+        let alice_body = upload_body(&alice).unwrap();
+        assert!(!Cert::from_bytes(alice_body.as_bytes()).unwrap().is_tsk());
+    }
+
+    /// The redirect guard, exercised directly: scheme and hop count never
+    /// looked at where a redirect pointed, so a hostile server could send the
+    /// client at the machine's own network.
+    #[test]
+    fn refuses_redirects_that_point_inward() {
+        let inward = [
+            "https://127.0.0.1/vks/v1/by-email/a@b.c",
+            "https://10.0.0.5:8443/",
+            "https://192.168.1.1/",
+            "https://172.16.0.1/",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://0.0.0.0/",
+            "https://[::1]/",
+            "https://[fe80::1]/",
+            "https://[fc00::1]/",
+        ];
+        for url in inward {
+            let parsed = reqwest::Url::parse(url).unwrap();
+            assert!(redirects_inward(&parsed), "should have been refused: {url}");
+        }
+
+        let outward = [
+            "https://keys.openpgp.org/vks/v1/upload",
+            "https://openpgpkey.example.org/.well-known/openpgpkey/",
+            "https://8.8.8.8/",
+            "https://[2606:4700:4700::1111]/",
+        ];
+        for url in outward {
+            let parsed = reqwest::Url::parse(url).unwrap();
+            assert!(!redirects_inward(&parsed), "should have been allowed: {url}");
+        }
     }
 
     #[test]

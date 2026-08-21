@@ -58,26 +58,33 @@ impl Authentication {
 /// rather than as an error: an unusable trust graph should grey out the
 /// trust column, not stop the list from being shown.
 pub fn authenticate_all(certs: &[Cert], roots: &[String]) -> HashMap<String, Authentication> {
-    let mut result: HashMap<String, Authentication> = certs
-        .iter()
-        .map(|cert| {
-            (
-                cert.fingerprint().to_hex().to_uppercase(),
-                Authentication::Unknown,
-            )
-        })
-        .collect();
+    // The all-Unknown map is only what the two early returns below hand back.
+    // Building it up front meant the success path inserted every key twice —
+    // once as Unknown and once with the real verdict — allocating the key
+    // string both times, for every certificate on every reload.
+    let unknown = || -> HashMap<String, Authentication> {
+        certs
+            .iter()
+            .map(|cert| {
+                (
+                    cert.fingerprint().to_hex().to_uppercase(),
+                    Authentication::Unknown,
+                )
+            })
+            .collect()
+    };
 
     let roots: Vec<Fingerprint> = roots.iter().filter_map(|r| r.parse().ok()).collect();
     if roots.is_empty() {
-        return result;
+        return unknown();
     }
 
     let policy = crate::policy();
     let Ok(network) = Network::from_cert_refs(certs.iter(), &policy, None, roots.as_slice()) else {
-        return result;
+        return unknown();
     };
 
+    let mut result: HashMap<String, Authentication> = HashMap::with_capacity(certs.len());
     for cert in certs {
         let fingerprint = cert.fingerprint();
         let mut best = Authentication::Unknown;

@@ -217,8 +217,10 @@ infrastructure.
 
 Publishing cannot be undone — a keyserver has no delete — so the dialog says so
 and uses the same danger styling as revocation. Only the public half is ever
-sent: `publish` strips secret key material before serialising, and the test
-asserts on the request to prove it.
+sent, and no local certification goes with it: `publish` serialises the
+certificate rather than the transferable secret key, and uses `export_to_vec`,
+which omits signatures marked non-exportable. A test asserts on the upload body
+itself, parsing it back to check both properties.
 
 ## Where certificates live
 

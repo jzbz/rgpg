@@ -147,10 +147,26 @@ pub fn certify(store: &Store, request: &CertifyRequest) -> Result<Cert> {
         // or it is born dead. Withdraw-then-recertify within a second is one
         // person clicking twice; only our own revocations count, for the same
         // reason only our own certifications count over there.
+        //
+        // "Ours" means one that verifies against our key, not one that merely
+        // names it. other_revocations() hands back packets exactly as they were
+        // parsed, and an issuer subpacket is an unauthenticated hint anyone can
+        // write — so filtering on the name alone let a planted packet dated in
+        // the far future set `when` to that instant, producing a certification
+        // that is not yet valid and never takes effect. Refetching the target
+        // re-planted it, so every retry was neutralised the same way. This is
+        // the same verification certifications() already performs below.
+        let certifier_key = certifier.primary_key().key();
         let mut when = SystemTime::now();
         for revocation in amalgamation
             .other_revocations()
             .filter(|sig| crate::cert::issued_by(sig, &certifier))
+            .filter(|sig| {
+                (*sig)
+                    .clone()
+                    .verify_userid_revocation(certifier_key, target.primary_key().key(), &userid)
+                    .is_ok()
+            })
         {
             if let Some(created) = revocation.signature_creation_time() {
                 let after = created + Duration::from_secs(1);

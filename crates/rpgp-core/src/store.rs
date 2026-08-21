@@ -237,10 +237,48 @@ impl Store {
     /// you already trust by definition.
     pub fn effective_roots(&self) -> Result<BTreeSet<String>> {
         let mut roots = self.trust_roots()?;
-        for cert in self.secret_certs()? {
-            roots.insert(cert.fingerprint().to_hex().to_uppercase());
-        }
+        roots.extend(self.secret_fingerprints()?);
         Ok(roots)
+    }
+
+    /// The fingerprint of every secret key on disk, read from the filenames.
+    ///
+    /// The names are what `secret_path` writes, so the directory listing
+    /// answers "do we hold this secret half?" without opening anything — which
+    /// is the same question `has_secret` answers with a stat, and the reason
+    /// this exists: callers that need the answer for *every* certificate were
+    /// paying a syscall and four allocations each to re-derive a set the
+    /// directory already spells out.
+    ///
+    /// Deliberately not built from [`Store::secret_certs`]: that skips files
+    /// that will not parse, so a damaged key would silently report as absent
+    /// here while `has_secret` still finds it. Listing names keeps the two
+    /// answers identical, and `damaged_secret_files` remains how a broken file
+    /// is surfaced.
+    pub fn secret_fingerprints(&self) -> Result<BTreeSet<String>> {
+        let mut out = BTreeSet::new();
+        let entries = match fs::read_dir(&self.secrets_dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => {
+                return Err(Error::io(
+                    format!("reading {}", self.secrets_dir.display()),
+                    e,
+                ));
+            }
+        };
+        for entry in entries {
+            let path = entry
+                .map_err(|e| Error::io(format!("reading {}", self.secrets_dir.display()), e))?
+                .path();
+            if !path.extension().is_some_and(|e| e == "pgp") {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                out.insert(stem.to_uppercase());
+            }
+        }
+        Ok(out)
     }
 
     /// Every public certificate in the store, parsed.
@@ -1000,6 +1038,65 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("certs.d"), dir.path().join("secrets")).unwrap();
         (dir, store)
+    }
+
+    /// `secret_fingerprints` must answer exactly what `has_secret` answers,
+    /// including for a file that will not parse.
+    ///
+    /// That case is the whole reason the set is built from filenames rather
+    /// than from `secret_certs`, which skips unparseable files: built the other
+    /// way, a damaged key would report as absent here while `has_secret` still
+    /// found it, and the certificate would silently lose its "secret key" badge.
+    #[test]
+    fn secret_fingerprints_agrees_with_has_secret_even_on_a_damaged_file() {
+        use crate::keygen::{KeyGenRequest, generate};
+        let (dir, store) = scratch();
+
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+        let bob = generate(&KeyGenRequest::new("Bob <bob@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert(&bob).unwrap();
+
+        // A file that looks like a key and is not one.
+        let damaged = dir.path().join("secrets").join(
+            "AAAABBBBCCCCDDDDEEEEFFFF00001111222233334444555566667777888899990.pgp",
+        );
+        std::fs::write(&damaged, b"not an OpenPGP key at all").unwrap();
+
+        let set = store.secret_fingerprints().unwrap();
+
+        // Agrees with has_secret on the real key, and on one we do not hold.
+        let alice_fp = alice.fingerprint().to_hex().to_uppercase();
+        assert!(set.contains(&alice_fp));
+        assert!(store.has_secret(&alice_fp));
+        let bob_fp = bob.fingerprint().to_hex().to_uppercase();
+        assert!(!set.contains(&bob_fp));
+        assert!(!store.has_secret(&bob_fp));
+
+        // And on the damaged one: present to both, absent from secret_certs.
+        let damaged_fp = damaged
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_uppercase();
+        assert!(
+            set.contains(&damaged_fp),
+            "a damaged file must still count as holding a secret half"
+        );
+        assert!(store.has_secret(&damaged_fp));
+        assert!(
+            !store
+                .secret_certs()
+                .unwrap()
+                .iter()
+                .any(|c| c.fingerprint().to_hex().to_uppercase() == damaged_fp),
+            "secret_certs is expected to skip it - that is the divergence"
+        );
     }
 
     /// Against the developer's own GnuPG keyring when there is one. Read-only:

@@ -690,7 +690,13 @@ pub fn decrypt_file(
     // message to a published key, so buffering the plaintext made the size of
     // an allocation the sender's choice. On disk it is the filesystem's
     // problem, and a partial temp file is removed.
-    let staging = output.with_extension("part");
+    // Appended rather than substituted, and routed through free_name: the old
+    // `output.with_extension("part")` turned notes.txt into notes.part — a name
+    // a user may well own — and this path truncates that file on create, then
+    // renames it away on success or unlinks it on failure. free_name is the
+    // same rule decrypted_name already applies to the output; the staging file
+    // had simply been left out of it.
+    let staging = free_name(append_extension(output, "part"));
     let result = {
         let file = fs::File::create(&staging)
             .map_err(|e| Error::io(format!("writing {}", staging.display()), e))?;
@@ -889,8 +895,50 @@ mod tests {
         assert!(decrypt_file(&store, &bad, &[], &out).is_err());
         assert!(!out.exists(), "no output on failure");
         assert!(
-            !out.with_extension("part").exists(),
+            !append_extension(&out, "part").exists(),
             "no staging file left behind"
+        );
+    }
+
+    /// The staging file must not land on a name the user already owns.
+    ///
+    /// `output.with_extension("part")` substituted rather than appended, so
+    /// decrypting `notes.txt.asc` next to an unrelated `notes.part` truncated
+    /// that file on create and then renamed it away — the exact destruction
+    /// `free_name` exists to prevent, on the one path that skipped it.
+    #[test]
+    fn the_staging_file_does_not_destroy_an_unrelated_file() {
+        let (dir, store) = scratch_store();
+        let alice = generate(&KeyGenRequest::new("Alice <alice@example.org>"))
+            .unwrap()
+            .cert;
+        store.insert_secret(&alice).unwrap();
+
+        let mut ciphertext = Vec::new();
+        encrypt(
+            std::slice::from_ref(&alice),
+            &[],
+            None,
+            b"hello",
+            &mut ciphertext,
+        )
+        .unwrap();
+        let input = dir.path().join("notes.txt.asc");
+        std::fs::write(&input, &ciphertext).unwrap();
+
+        // The bystander: what the old substituting name would have collided
+        // with, and what a real user might have had sitting there.
+        let bystander = dir.path().join("notes.part");
+        std::fs::write(&bystander, b"someone else's file").unwrap();
+
+        let output = decrypted_name(&input);
+        decrypt_file(&store, &input, &[], &output).unwrap();
+
+        assert_eq!(std::fs::read(&output).unwrap(), b"hello");
+        assert_eq!(
+            std::fs::read(&bystander).unwrap(),
+            b"someone else's file",
+            "decrypting destroyed an unrelated file"
         );
     }
 

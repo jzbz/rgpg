@@ -49,30 +49,36 @@ impl Sort {
         }
     }
 
-    fn apply(self, certs: &mut [CertSummary]) {
+    /// Order `shown` — positions in `all` — by what those positions point at.
+    ///
+    /// Takes indices rather than summaries because the list is a view: sorting
+    /// the view must not require copying the things it views.
+    fn apply_to(self, all: &[CertSummary], shown: &mut [usize]) {
+        let get = |i: &usize| &all[*i];
+        // sort_by_cached_key, not sort_by/sort_by_key: the name key allocates,
+        // and a comparator calls it on every comparison — twice, for the arms
+        // that fall back to it — which is O(n log n) allocations for a list
+        // that is re-sorted on every keystroke. Cached, it is one per element.
+        //
+        // The descending components become Reverse rather than a flipped cmp,
+        // and "never expires sorts last" becomes `is_none()` ordering false
+        // before true; both produce the same sequence the comparators did.
         let by_name = |c: &CertSummary| c.primary_user_id.to_lowercase();
         match self {
-            Sort::MineFirst => certs.sort_by(|a, b| {
-                b.has_secret
-                    .cmp(&a.has_secret)
-                    .then_with(|| by_name(a).cmp(&by_name(b)))
+            Sort::MineFirst => shown.sort_by_cached_key(|i| {
+                let c = get(i);
+                (std::cmp::Reverse(c.has_secret), by_name(c))
             }),
-            Sort::Name => certs.sort_by_key(by_name),
-            Sort::Newest => certs.sort_by(|a, b| {
-                b.created
-                    .cmp(&a.created)
-                    .then_with(|| by_name(a).cmp(&by_name(b)))
+            Sort::Name => shown.sort_by_cached_key(|i| by_name(get(i))),
+            Sort::Newest => shown.sort_by_cached_key(|i| {
+                let c = get(i);
+                (std::cmp::Reverse(c.created), by_name(c))
             }),
             // Certificates that never expire sort last rather than first: an
             // absent date is the opposite of urgent.
-            Sort::ExpiringSoonest => certs.sort_by(|a, b| {
-                match (a.expires, b.expires) {
-                    (Some(x), Some(y)) => x.cmp(&y),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                }
-                .then_with(|| by_name(a).cmp(&by_name(b)))
+            Sort::ExpiringSoonest => shown.sort_by_cached_key(|i| {
+                let c = get(i);
+                (c.expires.is_none(), c.expires, by_name(c))
             }),
         }
     }
@@ -126,7 +132,11 @@ struct State {
     /// all its methods take `&self`.
     store: Arc<Store>,
     all: Vec<CertSummary>,
-    shown: Vec<CertSummary>,
+    /// Positions in `all`, not copies of it: the list is a view, and cloning
+    /// every matching summary to build it allocated six to eight times per
+    /// certificate on every reload and every keystroke. Rebuilt by
+    /// `apply_filter` whenever `all` changes, so an index is never stale.
+    shown: Vec<usize>,
     filter: String,
     scope: Scope,
     sort: Sort,
@@ -523,7 +533,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
 
             let Some(summary) = usize::try_from(row)
                 .ok()
-                .and_then(|r| guard.shown.get(r))
+                .and_then(|r| guard.shown_at(r))
                 .cloned()
             else {
                 ui.set_has_selection(false);
@@ -599,7 +609,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
                     };
                     let row = ui.get_current_row();
                     let state = lock(&state);
-                    match usize::try_from(row).ok().and_then(|r| state.shown.get(r)) {
+                    match usize::try_from(row).ok().and_then(|r| state.shown_at(r)) {
                         Some(s) => (s.fingerprint.clone(), format!("{}.asc", s.key_id)),
                         None => return,
                     }
@@ -617,9 +627,7 @@ fn wire_list(ui: &AppWindow, state: &Shared) {
                 let Some(ui) = ui_weak.upgrade() else {
                     return;
                 };
-                let outcome = state
-                    .lock()
-                    .unwrap()
+                let outcome = lock(&state)
                     .store
                     .export_file(std::slice::from_ref(&fingerprint), file.path());
                 ui.set_status(SharedString::from(match outcome {
@@ -716,7 +724,7 @@ fn wire_sign_encrypt(ui: &AppWindow, state: &Shared) {
             // whatever is selected in the list starts ticked.
             let preselect = usize::try_from(ui.get_current_row())
                 .ok()
-                .and_then(|r| guard.shown.get(r))
+                .and_then(|r| guard.shown_at(r))
                 .map(|s| s.fingerprint.clone());
 
             let recipients: Vec<Recipient> = guard
@@ -1201,7 +1209,7 @@ fn wire_certify(ui: &AppWindow, state: &Shared) {
 
             let Some(target) = usize::try_from(ui.get_current_row())
                 .ok()
-                .and_then(|r| guard.shown.get(r))
+                .and_then(|r| guard.shown_at(r))
                 .cloned()
             else {
                 return;
@@ -1489,12 +1497,14 @@ fn reselect(ui: &AppWindow, state: &Shared, fingerprint: &str) {
     let Some(index) = guard
         .shown
         .iter()
-        .position(|c| c.fingerprint == fingerprint)
+        .position(|&i| guard.all.get(i).is_some_and(|c| c.fingerprint == fingerprint))
     else {
         return;
     };
 
-    let summary = guard.shown[index].clone();
+    let Some(summary) = guard.shown_at(index).cloned() else {
+        return;
+    };
     ui.set_current_row(index as i32);
     ui.set_detail(to_row(&summary));
     ui.set_has_selection(true);
@@ -1830,12 +1840,22 @@ fn run_lifecycle(state: &Shared, input: &LifecycleInput) -> Result<(String, Stri
             let mut message = format!("Published {}", published.fingerprint);
             if let Some(token) = published.token.as_deref()
                 && !pending.is_empty()
-                && rpgp_core::keyserver::request_verification(token, &pending).is_ok()
             {
-                message.push_str(&format!(
-                    ". Confirmation mail sent to {}; the address is not served until it is confirmed.",
-                    pending.join(", ")
-                ));
+                // Reported either way. The upload cannot be undone and an
+                // unverified address is stored but never served, so a silently
+                // swallowed failure here left the user believing the key was
+                // published and searchable when only the first half was true.
+                match rpgp_core::keyserver::request_verification(token, &pending) {
+                    Ok(()) => message.push_str(&format!(
+                        ". Confirmation mail sent to {}; the address is not served until it is confirmed.",
+                        pending.join(", ")
+                    )),
+                    Err(e) => message.push_str(&format!(
+                        ". The key is uploaded, but asking for the confirmation mail to {} failed ({e}); \
+                         until that succeeds the address is stored and not served. Publish again to retry.",
+                        pending.join(", ")
+                    )),
+                }
             }
             Ok((message, fingerprint.to_string()))
         }
@@ -2387,7 +2407,7 @@ fn open_revoke_dialog(ui: &AppWindow, state: &Shared, certification: bool) {
 
     let Some(target) = usize::try_from(ui.get_current_row())
         .ok()
-        .and_then(|r| guard.shown.get(r))
+        .and_then(|r| guard.shown_at(r))
         .cloned()
     else {
         return;
@@ -2500,10 +2520,14 @@ fn run_revoke(
 
 /// Re-read the store from disk and rebuild the list.
 ///
-/// Everything here is local — cert-d, the trust graph, the secret-key files —
-/// and runs on the event loop because the list has to exist before the call
-/// returns: eight call sites follow it immediately with `reselect`. The parts
-/// that leave the machine or re-parse every secret key are handed to
+/// Everything here is local — cert-d, the trust graph, the secret-key
+/// directory — and runs on the event loop because the list has to exist before
+/// the call returns: several call sites follow it immediately with `reselect`.
+///
+/// It reads the secrets directory but does not open the keys in it: which
+/// certificates have a secret half is answered from the filenames, via
+/// [`Store::secret_fingerprints`]. The parts that leave the machine, and the
+/// damaged-file survey that does re-parse every secret key, are handed to
 /// [`survey_agent_and_secrets`] instead.
 fn reload(ui: &AppWindow, state: &Shared) {
     let mut guard = lock(state);
@@ -2530,11 +2554,15 @@ fn reload(ui: &AppWindow, state: &Shared) {
     let explicit_roots = guard.store.trust_roots().unwrap_or_default();
     let authenticated = wot::authenticate_all(&certs, &roots);
 
-    // The secret half lives outside cert-d, so ask the store which ones it has.
-    let State { store, all, .. } = &mut *guard;
+    // The secret half lives outside cert-d, so ask the store which ones it has
+    // — once, as a set. Asking per certificate meant a stat syscall and four
+    // string allocations each, to re-derive what the directory listing above
+    // already produced.
+    let secrets = guard.store.secret_fingerprints().unwrap_or_default();
+    let State { all, .. } = &mut *guard;
     for summary in all.iter_mut() {
         let key = summary.fingerprint.to_uppercase();
-        summary.has_secret = store.has_secret(&summary.fingerprint);
+        summary.has_secret = secrets.contains(&key);
         summary.is_trust_root = explicit_roots.contains(&key);
         summary.authentication = authenticated.get(&key).copied().unwrap_or_default();
     }
@@ -2721,21 +2749,34 @@ fn survey_agent_and_secrets(ui: &AppWindow, state: &Shared, store: std::sync::Ar
     });
 }
 
+impl State {
+    /// The summary a displayed row refers to, resolving the index in `shown`.
+    fn shown_at(&self, row: usize) -> Option<&CertSummary> {
+        self.all.get(*self.shown.get(row)?)
+    }
+}
+
 /// Rebuild `shown` and the list model from the current scope and search text.
 fn apply_filter(ui: &AppWindow, state: &Shared) {
     let mut guard = lock(state);
 
     let (filter, scope, sort) = (guard.filter.clone(), guard.scope, guard.sort);
-    let mut shown: Vec<CertSummary> = guard
+    let mut shown: Vec<usize> = guard
         .all
         .iter()
-        .filter(|c| scope.accepts(c) && c.matches(&filter))
-        .cloned()
+        .enumerate()
+        .filter(|(_, c)| scope.accepts(c) && c.matches(&filter))
+        .map(|(i, _)| i)
         .collect();
-    sort.apply(&mut shown);
+    sort.apply_to(&guard.all, &mut shown);
     guard.shown = shown;
 
-    let rows: Vec<CertRow> = guard.shown.iter().map(to_row).collect();
+    let rows: Vec<CertRow> = guard
+        .shown
+        .iter()
+        .filter_map(|&i| guard.all.get(i))
+        .map(to_row)
+        .collect();
     let total = guard.all.len();
     let mine = guard.all.iter().filter(|c| c.has_secret).count();
     let shown = rows.len();
@@ -2856,6 +2897,59 @@ mod tests {
         summary.fingerprint = fingerprint.to_string();
         summary.authentication = authentication;
         summary
+    }
+
+    /// The list is a view of positions into `all`, so ordering it must still
+    /// produce the sequence the old by-value comparators did.
+    ///
+    /// MineFirst is the default and the one that used to allocate twice per
+    /// comparison; the tie inside it is what would expose a stability change.
+    #[test]
+    fn sorting_the_view_orders_by_what_the_positions_point_at() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let make = |name: &str, secret: bool, age: u64| {
+            let mut c = known(&format!("{age:040X}"), Authentication::Unknown);
+            c.primary_user_id = name.to_string();
+            c.has_secret = secret;
+            c.created = UNIX_EPOCH + Duration::from_secs(age);
+            c
+        };
+        // Deliberately unsorted, with a has_secret tie between "alice"/"Bob".
+        let all = vec![
+            make("carol", false, 30),
+            make("Bob", true, 10),
+            make("alice", true, 20),
+            make("dave", false, 40),
+        ];
+
+        let named = |shown: &[usize]| -> Vec<&str> {
+            shown
+                .iter()
+                .map(|&i| all[i].primary_user_id.as_str())
+                .collect()
+        };
+
+        let mut shown: Vec<usize> = (0..all.len()).collect();
+        Sort::MineFirst.apply_to(&all, &mut shown);
+        assert_eq!(
+            named(&shown),
+            ["alice", "Bob", "carol", "dave"],
+            "secret keys first, then case-insensitive by name"
+        );
+
+        let mut shown: Vec<usize> = (0..all.len()).collect();
+        Sort::Name.apply_to(&all, &mut shown);
+        assert_eq!(named(&shown), ["alice", "Bob", "carol", "dave"]);
+
+        let mut shown: Vec<usize> = (0..all.len()).collect();
+        Sort::Newest.apply_to(&all, &mut shown);
+        assert_eq!(named(&shown), ["dave", "carol", "alice", "Bob"]);
+
+        // A filtered view: the indices are a subset and must stay valid.
+        let mut shown = vec![3usize, 1];
+        Sort::Name.apply_to(&all, &mut shown);
+        assert_eq!(named(&shown), ["Bob", "dave"]);
     }
 
     /// A signature that verifies says the bytes came from a key. It does not

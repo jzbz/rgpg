@@ -67,19 +67,60 @@ pub fn harden() {
 
 #[cfg(test)]
 mod tests {
-    /// The flag is what makes the difference, so assert on the kernel's view
-    /// of it rather than on `harden` having been called.
+    /// `harden()` itself, in a child process.
+    ///
+    /// The previous test never called it: it exercised
+    /// `set_dumpable_behavior` directly and asserted the kernel honoured it,
+    /// which tests rustix rather than this module — deleting the call inside
+    /// `harden` left it green. A child is the way to test the real function
+    /// without making the test binary itself undebuggable.
     #[test]
     #[cfg(target_os = "linux")]
-    fn harden_clears_the_dumpable_flag() {
-        use rustix::process::{DumpableBehavior, dumpable_behavior};
+    fn harden_makes_the_process_non_dumpable() {
+        // Re-exec this test binary and run only the helper below.
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture", "--ignored", "hardening::tests::dumpable_probe"])
+            .env("RPGP_HARDEN_PROBE", "1")
+            .env_remove(super::ALLOW_DEBUG)
+            .output()
+            .expect("re-exec the test binary");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains("PROBE dumpable=NotDumpable"),
+            "harden() did not clear the dumpable flag in the child; stdout was: {text}"
+        );
+    }
 
-        // Not `harden()`: this runs in the shared test process, and the test
-        // binary should stay debuggable. Exercise the same call directly and
-        // put it back.
-        let before = dumpable_behavior().unwrap();
-        rustix::process::set_dumpable_behavior(DumpableBehavior::NotDumpable).unwrap();
-        assert_eq!(dumpable_behavior().unwrap(), DumpableBehavior::NotDumpable);
-        rustix::process::set_dumpable_behavior(before).unwrap();
+    /// The escape hatch: with `RPGP_ALLOW_DEBUG` set, `harden()` must leave the
+    /// flag alone, or the documented way to get a backtrace does not work.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn allow_debug_leaves_the_process_dumpable() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture", "--ignored", "hardening::tests::dumpable_probe"])
+            .env("RPGP_HARDEN_PROBE", "1")
+            .env(super::ALLOW_DEBUG, "1")
+            .output()
+            .expect("re-exec the test binary");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains("PROBE dumpable=Dumpable"),
+            "RPGP_ALLOW_DEBUG did not keep the process dumpable; stdout was: {text}"
+        );
+    }
+
+    /// Not a test: the body the two tests above re-exec. `#[ignore]` keeps it
+    /// out of an ordinary run, and it only acts when the parent sets the
+    /// marker, so it never hardens the shared test process by accident.
+    #[test]
+    #[ignore = "helper process for the harden tests"]
+    #[cfg(target_os = "linux")]
+    fn dumpable_probe() {
+        if std::env::var_os("RPGP_HARDEN_PROBE").is_none() {
+            return;
+        }
+        super::harden();
+        let state = rustix::process::dumpable_behavior().unwrap();
+        println!("PROBE dumpable={state:?}");
     }
 }

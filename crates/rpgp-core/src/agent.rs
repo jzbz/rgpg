@@ -88,8 +88,14 @@ fn connect() -> Result<Agent> {
 
 /// Whether a gpg-agent is reachable at all.
 ///
-/// Used to decide whether to offer card-backed keys in the UI, so a machine
-/// without GnuPG simply does not show the option.
+/// Not currently called by the GUI, which reaches the agent through
+/// [`annotate`] and the fallbacks in `ops` instead and lets each of those fail
+/// on its own. The earlier note here claimed the UI used this to decide whether
+/// to offer card-backed keys; no such gate was ever built, and a reader tracing
+/// how card keys reach the interface was sent somewhere nothing calls.
+///
+/// Kept because it is the cheap reachability probe the tests below use, and the
+/// obvious primitive if that gate is ever wanted.
 pub fn available() -> bool {
     connect().is_ok()
 }
@@ -114,6 +120,10 @@ pub fn keys() -> Result<Vec<AgentKey>> {
 }
 
 /// Only the keys that live on a smartcard.
+///
+/// Like [`available`], not on a GUI path today: the list pane gets its card
+/// badges from [`annotate`], which answers for the whole store in one round
+/// trip. This is the single-question form, used by the tests.
 pub fn card_keys() -> Result<Vec<AgentKey>> {
     Ok(keys()?.into_iter().filter(AgentKey::is_on_card).collect())
 }

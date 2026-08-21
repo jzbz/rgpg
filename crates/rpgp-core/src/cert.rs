@@ -106,21 +106,22 @@ impl CertSummary {
             .as_ref()
             .and_then(|vc| vc.primary_key().key_expiration_time());
 
-        let (can_certify, can_sign, can_encrypt) = match valid.as_ref() {
-            Some(vc) => {
-                let alive = || vc.keys().alive().revoked(false);
-                (
-                    alive().for_certification().next().is_some(),
-                    alive().for_signing().next().is_some(),
-                    alive()
-                        .for_transport_encryption()
-                        .chain(vc.keys().alive().revoked(false).for_storage_encryption())
-                        .next()
-                        .is_some(),
-                )
+        // One traversal, three answers. Each `alive()` rebuilt the whole
+        // policy-filtered iterator, so asking three questions walked every
+        // subkey four times — once per question plus one for the storage-key
+        // chain — and from_cert runs once per certificate on every reload.
+        let (mut can_certify, mut can_sign, mut can_encrypt) = (false, false, false);
+        if let Some(vc) = valid.as_ref() {
+            for ka in vc.keys().alive().revoked(false) {
+                let Some(flags) = ka.key_flags() else {
+                    continue;
+                };
+                can_certify |= flags.for_certification();
+                can_sign |= flags.for_signing();
+                can_encrypt |=
+                    flags.for_transport_encryption() || flags.for_storage_encryption();
             }
-            None => (false, false, false),
-        };
+        }
 
         let expired = expires.is_some_and(|t| t <= now);
         let validity = if revoked {
@@ -175,12 +176,19 @@ impl CertSummary {
     /// Fingerprint in the spaced, four-hex-digit grouping used for reading
     /// aloud and comparing by eye.
     pub fn fingerprint_pretty(&self) -> String {
-        self.fingerprint
-            .as_bytes()
-            .chunks(4)
-            .map(|c| String::from_utf8_lossy(c).into_owned())
-            .collect::<Vec<_>>()
-            .join(" ")
+        // Written into one buffer of known size. Collecting the chunks into
+        // owned Strings and joining them allocated a dozen times to produce a
+        // 50-character string, once per row, on every reload and keystroke.
+        let hex = self.fingerprint.as_bytes();
+        let groups = hex.len().div_ceil(4);
+        let mut out = String::with_capacity(hex.len() + groups.saturating_sub(1));
+        for (i, chunk) in hex.chunks(4).enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            out.push_str(&String::from_utf8_lossy(chunk));
+        }
+        out
     }
 
     /// True when `needle` (lowercased by the caller) appears in any field a
