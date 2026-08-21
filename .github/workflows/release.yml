@@ -1,0 +1,177 @@
+# Builds the Flatpak bundle for each architecture and attaches it to the
+# release for the tag that triggered the run.
+#
+# Only official actions, for the reason the CI workflow gives: this is a
+# project about handling secret keys, and a third-party action runs with the
+# same access to the workflow as anything else in it. flatpak-builder comes
+# from apt rather than from an action for the same reason.
+#
+# What is deliberately NOT published here is a bare Linux binary. One built on
+# a current distribution needs a glibc newer than Debian, Ubuntu LTS or Fedora
+# ship, and links fontconfig, freetype, sqlite3, png, brotli, bz2 and expat
+# from the host besides — so it runs almost nowhere except the machine that
+# built it. The Flatpak carries its own runtime and is the portable artifact.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # So the workflow can be exercised without cutting a tag.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or commit to build"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  RUNTIME_VERSION: "25.08"
+
+jobs:
+  bundle:
+    name: Flatpak (${{ matrix.arch }})
+    timeout-minutes: 90
+    strategy:
+      # One architecture failing must not hide the other's result: they are
+      # separate downloads and a release with one of them is still useful.
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install flatpak-builder
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          # Same apt shape as ci.yml, and for the same reason: apt has no
+          # wall-clock bound of its own, and a wedged Ubuntu mirror otherwise
+          # hangs the step until the job ceiling.
+          opts=(
+            -o Acquire::Retries=2
+            -o Acquire::http::Timeout=15
+            -o Acquire::https::Timeout=15
+            -o Acquire::Languages=none
+          )
+          attempts=2
+          for attempt in $(seq 1 $attempts); do
+            rc=0
+            sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 180s \
+              apt-get "${opts[@]}" update || rc=$?
+            if [ "$rc" -eq 0 ] || [ "$attempt" -eq "$attempts" ]; then
+              rc=0
+              sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=15s 300s \
+                apt-get "${opts[@]}" install -y flatpak flatpak-builder || rc=$?
+              if [ "$rc" -ne 0 ]; then
+                sudo DEBIAN_FRONTEND=noninteractive timeout --kill-after=10s 60s \
+                  dpkg --configure -a || true
+              fi
+            fi
+            if [ "$rc" -eq 0 ]; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed with $rc"
+            if [ "$attempt" -lt "$attempts" ]; then sleep 5; fi
+          done
+          echo "::error::apt failed twice; the Ubuntu mirrors are not answering"
+          exit 1
+
+      # The runtime is a large download and the bulk of this job's wall clock.
+      - name: Install the freedesktop runtime and the Rust SDK extension
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          flatpak remote-add --if-not-exists --user \
+            flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive --arch=${{ matrix.arch }} flathub \
+            org.freedesktop.Platform//$RUNTIME_VERSION \
+            org.freedesktop.Sdk//$RUNTIME_VERSION \
+            org.freedesktop.Sdk.Extension.rust-stable//$RUNTIME_VERSION
+
+      # Generated rather than committed: it is 420K, derived entirely from
+      # Cargo.lock, and stale the moment a dependency moves.
+      - name: Generate the offline cargo sources
+        run: python3 packaging/cargo-sources.py > packaging/cargo-sources.json
+
+      # The manifest in the tree names the released tag. Building the exact
+      # commit that triggered this run keeps the artifact honest even when the
+      # two disagree — a tag moved after the fact cannot change what shipped.
+      - name: Point the manifest at this commit
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_SHA" <<'PY'
+          import pathlib, re, sys
+          sha = sys.argv[1]
+          p = pathlib.Path("packaging/app.rpgp.rpgp.yml")
+          s = p.read_text()
+          s2 = re.sub(r"^        commit: [0-9a-f]{40}$",
+                      f"        commit: {sha}", s, count=1, flags=re.M)
+          assert s2 != s, "no commit: line to rewrite in the manifest"
+          p.write_text(s2)
+          print(f"building {sha}")
+          PY
+
+      - name: Build
+        timeout-minutes: 60
+        run: |
+          flatpak-builder --force-clean --disable-rofiles-fuse \
+            --arch=${{ matrix.arch }} --repo=repo build \
+            packaging/app.rpgp.rpgp.yml
+
+      - name: Bundle
+        run: |
+          set -euo pipefail
+          NAME="rpgp-${GITHUB_REF_NAME}-${{ matrix.arch }}.flatpak"
+          flatpak build-bundle --arch=${{ matrix.arch }} \
+            repo "$NAME" app.rpgp.rpgp master
+          sha256sum "$NAME" | tee "$NAME.sha256"
+          ls -lh "$NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-${{ matrix.arch }}
+          path: |
+            *.flatpak
+            *.flatpak.sha256
+
+  release:
+    name: Attach to the release
+    needs: bundle
+    # Only a tag push publishes. A workflow_dispatch run builds the bundles
+    # and stops, so the workflow can be exercised without creating a release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ls -lh *.flatpak *.flatpak.sha256
+
+          # A tag push creates no release on its own, so make one if it is not
+          # already there. --verify-tag refuses to invent a tag that does not
+          # exist, which would otherwise turn a typo into a published release.
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "rPGP $GITHUB_REF_NAME" \
+              --generate-notes
+          fi
+
+          gh release upload "$GITHUB_REF_NAME" \
+            *.flatpak *.flatpak.sha256 \
+            --repo "$GITHUB_REPOSITORY" --clobber

@@ -153,7 +153,11 @@ jobs:
       # must not be hidden by Linux failing first.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # ubuntu-24.04-arm is aarch64. It is here because the project ships a
+        # Flatpak for that architecture and had never once been compiled for
+        # it — macOS covers arm64 the language sees, but not Linux/aarch64 with
+        # wgpu and Vulkan underneath. Free on public repositories.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -258,8 +262,11 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-test-
+          # runner.arch is part of the key because runner.os is "Linux" for
+          # both x86_64 and aarch64: without it the two Linux jobs would share
+          # one cache and restore each other's target directory.
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-test-
 
       # No display is set up, and none is needed: the GUI tests drive Slint
       # through its testing backend with no event loop. The five ignored tests
