@@ -100,8 +100,18 @@ export component Btn inherits Rectangle {
 
     animate background { duration: Theme.fast; }
 
+    // A glyph does not fill its 16px box: the artwork is drawn inside a
+    // 24-unit canvas that leaves a margin, so the ink starts short of where
+    // the padding puts the box. Equal padding therefore reads as contents
+    // pushed to the right, which is what it looked like. Trim the leading
+    // padding by that margin so the *ink* is centred rather than the boxes.
+    //
+    // Not applied to a wide button: those left-align against a shared edge
+    // with their neighbours, and shifting one of them breaks the column.
+    property <length> lead-trim: root.wide || root.glyph.width <= 0 ? 0px : 1px;
+
     HorizontalLayout {
-        padding-left: root.text == "" ? 0px : Theme.s3;
+        padding-left: root.text == "" ? 0px : Theme.s3 - root.lead-trim;
         padding-right: root.text == "" ? 0px : Theme.s3;
         spacing: 6px;
         alignment: root.wide ? start : center;

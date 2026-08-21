@@ -9,6 +9,12 @@
   stroke-linecap="round"
   stroke-linejoin="round"
 >
-  <path d="M5 12h14" />
-  <path d="M12 5v14" />
+  <!--
+    Widened from Lucide's 14 units to 16. Every other icon in this set inks
+    20 of the 24-unit canvas; the stock plus inks 14, which left it visibly
+    smaller than its neighbours and gave the button it sits in more dead
+    space on the leading edge than the others had.
+  -->
+  <path d="M4 12h16" />
+  <path d="M12 4v16" />
 </svg>
