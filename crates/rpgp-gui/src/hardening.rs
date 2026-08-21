@@ -79,7 +79,12 @@ mod tests {
     fn harden_makes_the_process_non_dumpable() {
         // Re-exec this test binary and run only the helper below.
         let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "--nocapture", "--ignored", "hardening::tests::dumpable_probe"])
+            .args([
+                "--exact",
+                "--nocapture",
+                "--ignored",
+                "hardening::tests::dumpable_probe",
+            ])
             .env("RPGP_HARDEN_PROBE", "1")
             .env_remove(super::ALLOW_DEBUG)
             .output()
@@ -97,7 +102,12 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn allow_debug_leaves_the_process_dumpable() {
         let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "--nocapture", "--ignored", "hardening::tests::dumpable_probe"])
+            .args([
+                "--exact",
+                "--nocapture",
+                "--ignored",
+                "hardening::tests::dumpable_probe",
+            ])
             .env("RPGP_HARDEN_PROBE", "1")
             .env(super::ALLOW_DEBUG, "1")
             .output()

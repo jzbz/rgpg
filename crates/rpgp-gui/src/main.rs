@@ -1494,11 +1494,12 @@ fn certification_row(certification: &Certification, show_user_id: bool) -> Certi
 /// Re-select the row for `fingerprint` after the list has been rebuilt.
 fn reselect(ui: &AppWindow, state: &Shared, fingerprint: &str) {
     let guard = lock(state);
-    let Some(index) = guard
-        .shown
-        .iter()
-        .position(|&i| guard.all.get(i).is_some_and(|c| c.fingerprint == fingerprint))
-    else {
+    let Some(index) = guard.shown.iter().position(|&i| {
+        guard
+            .all
+            .get(i)
+            .is_some_and(|c| c.fingerprint == fingerprint)
+    }) else {
         return;
     };
 

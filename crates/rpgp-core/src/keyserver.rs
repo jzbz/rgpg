@@ -94,7 +94,11 @@ fn redirects_inward(url: &reqwest::Url) -> bool {
     };
     // An IPv6 literal arrives bracketed in a URL; a domain name will not parse
     // as an address at all, which is the "not a literal" case below.
-    let Ok(addr) = host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>() else {
+    let Ok(addr) = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<IpAddr>()
+    else {
         return false;
     };
     match addr {
@@ -679,7 +683,10 @@ mod tests {
         ];
         for url in outward {
             let parsed = reqwest::Url::parse(url).unwrap();
-            assert!(!redirects_inward(&parsed), "should have been allowed: {url}");
+            assert!(
+                !redirects_inward(&parsed),
+                "should have been allowed: {url}"
+            );
         }
     }
 

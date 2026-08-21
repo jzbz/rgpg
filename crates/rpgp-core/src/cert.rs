@@ -118,8 +118,7 @@ impl CertSummary {
                 };
                 can_certify |= flags.for_certification();
                 can_sign |= flags.for_signing();
-                can_encrypt |=
-                    flags.for_transport_encryption() || flags.for_storage_encryption();
+                can_encrypt |= flags.for_transport_encryption() || flags.for_storage_encryption();
             }
         }
 

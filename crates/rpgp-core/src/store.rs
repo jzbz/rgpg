@@ -1062,9 +1062,10 @@ mod tests {
         store.insert(&bob).unwrap();
 
         // A file that looks like a key and is not one.
-        let damaged = dir.path().join("secrets").join(
-            "AAAABBBBCCCCDDDDEEEEFFFF00001111222233334444555566667777888899990.pgp",
-        );
+        let damaged = dir
+            .path()
+            .join("secrets")
+            .join("AAAABBBBCCCCDDDDEEEEFFFF00001111222233334444555566667777888899990.pgp");
         std::fs::write(&damaged, b"not an OpenPGP key at all").unwrap();
 
         let set = store.secret_fingerprints().unwrap();
